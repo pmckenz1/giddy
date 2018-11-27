@@ -1,0 +1,7 @@
+
+site_name: giddy
+theme: readthedocs
+pages: 
+    - Home: index.md
+    - Installation: installation.md
+    - Tutorial: tutorial.md

@@ -1,2 +1,2 @@
-# giddy
+# strange
 Pop gen simulations
