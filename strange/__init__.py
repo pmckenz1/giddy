@@ -3,3 +3,4 @@
 __version__ = "0.1"
 __author__ = "Patrick McKenzie"
 from .Coalseq import Coalseq, get_dists
+from .Window import Window
