@@ -82,7 +82,6 @@ class Coalseq:
         ## stores data in memory as self.test_values as 'mrates' and 'mtimes'
         self._get_test_values()
 
-
     @property
     def _Ne(self):
         "Ne is automatically calculated from theta and fixed mut"
@@ -174,6 +173,10 @@ class Coalseq:
         self.treeseq = sims.next()
     
     def write_trees(self):
+        # write the species tree first
+        with open(self.dirname+'/species_tree.phy','w') as f:
+            f.write(self.tree.newick)
+
         # make a folder for the msprime genetree files
         dirname_genetrees = self.dirname+'/ms_genetrees'
         if not os.path.exists(dirname_genetrees):
@@ -200,6 +203,7 @@ class Coalseq:
         lengthsfile.close()
 
     def write_seqs(self):
+
         # make a folder for the sequence files
         dirname_seqs = self.dirname+'/seqs'
         if not os.path.exists(dirname_seqs):
@@ -270,6 +274,29 @@ class Coalseq:
             db=h5py.File(self.dirname+'/'+filename+'.hdf5')
             db['alignment'] = seq_arr
         print("Written full alignment.")
+    def write_clades(self):
+        '''
+        writes a new directory full of files that each correspond to a gene tree.
+        Each file contains a list of clades in that gene tree. 
+        '''
+        dirname_seqs = self.dirname + '/clades'
+        phys = np.array([self.dirname+'/ms_genetrees/' + str(i) + '.phy' 
+                         for i in xrange(self.treeseq.num_trees)])
+        if not os.path.exists(dirname_seqs):
+            os.mkdir(dirname_seqs)
+            print("Directory '" + dirname_seqs + "' created.")
+        for filenum in range(self.treeseq.num_trees):
+            with open(phys[filenum],'r+') as f:
+                newick = f.read()
+            tree = toytree.etemini.Tree(newick)
+            trav=tree.traverse()
+            mylist=[]
+            for i in trav:
+                mylist.append(i.get_leaf_names())
+            clades = [i for i in mylist if len(i) > 1 and len(i)<self.ntips]
+            with open(dirname_seqs+'/'+str(filenum)+'.txt','w') as f:
+                for item in clades:
+                    f.write('%s\n' % item)
 
 @jit
 def get_dists(breaks):
