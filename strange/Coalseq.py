@@ -231,31 +231,33 @@ class Coalseq:
                    hdf5=False):
         seq_len = 0
         for i in range(self.treeseq.num_trees):
-            with open(self.dirname+'/seqs/' + str(i) + '.fa','r') as f:
-                # count up what the total sequence length will be -- just add across all files
-                tst = f.read().split('\n')[0]
-                try:
-                    seq_len += int(tst.split(' ')[2])
-                except:
-                    print('there was an error: '+tst.split(' '))
+            if (os.stat(self.dirname+ '/seqs/' + str(i) + '.fa').st_size != 0):
+                with open(self.dirname+'/seqs/' + str(i) + '.fa','r') as f:
+                    # count up what the total sequence length will be -- just add across all files
+                    tst = f.read().split('\n')[0]
+                    try:
+                        seq_len += int(tst.split(' ')[2])
+                    except:
+                        print('there was an error')
         # make a zeros array of the shape of our final alignment
         seq_arr=np.zeros((self.ntips,seq_len),dtype=np.str)
         counter = 0
         # for each simulated sequence fragment...
         for i in range(self.treeseq.num_trees):
             # open the sequence file
-            with open(self.dirname+ '/seqs/' + str(i) + '.fa','r') as f:
-                # open, split, and exclude the last element (which is extraneous)
-                # then sort so that the species are ordered
-                myseq = np.sort(f.read().split('\n')[:-1])
-                # save the integer length of the sequence fragment from the top line
-                lenseq = int(myseq[0].split(' ')[2])
-                # now ditch the top line
-                myseq = myseq[1:]
-                # now add the fragment for each species to the proper place in the array
-                for idx, indiv_seq in enumerate(myseq):
-                    seq_arr[idx][counter:(counter+lenseq)] = list(indiv_seq[10:])
-                counter += lenseq
+            if (os.stat(self.dirname+ '/seqs/' + str(i) + '.fa').st_size != 0):
+                with open(self.dirname+ '/seqs/' + str(i) + '.fa','r') as f:
+                    # open, split, and exclude the last element (which is extraneous)
+                    # then sort so that the species are ordered
+                    myseq = np.sort(f.read().split('\n')[:-1])
+                    # save the integer length of the sequence fragment from the top line
+                    lenseq = int(myseq[0].split(' ')[2])
+                    # now ditch the top line
+                    myseq = myseq[1:]
+                    # now add the fragment for each species to the proper place in the array
+                    for idx, indiv_seq in enumerate(myseq):
+                        seq_arr[idx][counter:(counter+lenseq)] = list(indiv_seq[10:])
+                    counter += lenseq
         # now that we've filled our whole array, we can save it to a full fasta file:
         if not hdf5:
             with open(self.dirname+'/'+filename+'.fa','w') as f:
