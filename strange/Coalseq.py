@@ -60,13 +60,19 @@ class Coalseq:
 
         # output attributes:
         self.treeseq = None
+        self.tree_table = None
+        self.clade_table = None
+        self.seqarr = os.path.join(self.workdir, self.name + ".phy")
+        self.database = os.path.join(self.workdir, self.name + ".hdf5")
         if not os.path.exists(self.workdir):
             os.makedirs(self.workdir)
 
         # fill treeseq, tree_table, and seqarr...
         self._simulate()
         self._get_tree_table()
+        self._get_clade_table()
         self._get_sequences()
+
 
         # save tree_table and seqarr to disk
         #with open(os.path.join(self.workdir, self.name + ".phy"), 'w') as out:
@@ -139,11 +145,39 @@ class Coalseq:
                 int(tree.get_time(tree.get_root())) for tree 
                 in self.treeseq.trees()], 
             "mstree": [tree.newick() for tree in self.treeseq.trees()], 
-            # "mltree": np.nan, 
-            # "robinson-foulds": np.nan,
+            "treematch": [
+                toytree.tree(tree.newick()).treenode.robinson_foulds(
+                    self.tree, topology_only=True)[0] == 0 
+                for tree in self.treeseq.trees()], 
         })
         # drop intervals of length zero
         self.tree_table = self.tree_table[self.tree_table.length > 0]
+
+
+    def _get_clade_table(self):
+        """
+        Build a df of whether each clade in the species tree is present in the
+        genealogy of each interval.
+        """
+        # make a dictionary of all clades in the species tree
+        clades = get_clades(self.tree)
+
+        # make a dataframe for storing results      
+        self.clade_table = pd.DataFrame({
+            node.idx: np.zeros(self.tree_table.shape[0], dtype=int) 
+            for node in self.tree.treenode.traverse("postorder") 
+            if not node.is_leaf() and not node.is_root()
+        })
+
+        # fill clade table
+        tarr = [
+            get_clades(toytree.tree(self.tree_table.mstree[idx]))
+            for idx in self.tree_table.index
+        ]
+        for node in self.tree.treenode.traverse():
+            if not node.is_leaf() and not node.is_root():
+                arr = np.array([clades[node.idx] in i.values() for i in tarr])
+                self.clade_table[node.idx] = arr.astype(int)
 
 
     def _get_sequences(self):
@@ -152,12 +186,11 @@ class Coalseq:
         raxml tree and store the results in the tree table. 
         """
         # init the supermatrix
-        self.seqarr = np.zeros(
-            (self.ntips, self.tree_table.end.max()), dtype=bytes)
+        seqarr = np.zeros((self.ntips, self.tree_table.end.max()), dtype=bytes)
 
         # submit jobs to run asynchronously in parallel
         for idx in self.tree_table.index:
-            arr, nsnps = self._get_mltree_from_mstree(idx)
+            arr, nsnps = self._call_seqgen_on_mstree(idx)
 
             # append tree to the tree table
             # self.tree_table.loc[idx, 'mltree'] = mltree
@@ -166,11 +199,23 @@ class Coalseq:
             # fill sequences into the supermatrix
             start = self.tree_table.start[idx]
             end = self.tree_table.end[idx]
-            self.seqarr[:, start:end] = arr
+            seqarr[:, start:end] = arr
+
+        names = sorted(self.tree.get_tip_labels())
+        longname = max([len(i) for i in names]) + 1
+        printstr = ">{:<" + str(longname) + "} {}\n"
+        with open(self.seqarr, 'w') as outphy:
+            outphy.write("{} {}\n".format(*seqarr.shape))
+            for idx in range(seqarr.shape[0]):
+                outphy.write(printstr.format(
+                    names[idx],
+                    b"".join(seqarr[idx]).decode())
+                )
+            del seqarr
  
 
 
-    def _get_mltree_from_mstree(self, idx):
+    def _call_seqgen_on_mstree(self, idx):
         """
         Generate sequence data for each fragment (interval + genealogy) and 
         a model of sequence substitution. Pass sequence to raxml to get mltree. 
@@ -213,7 +258,7 @@ class Coalseq:
         return sarr, nsnps
 
 
-
+    ##################################################################
     def raxml_inference(self, physeq):
         "not currently used"
         mltree = np.nan
@@ -239,8 +284,6 @@ class Coalseq:
             if proc2.returncode:
                 raise Exception("raxml error: {}".format(out.decode()))
             mltree = toytree.tree(fname + ".raxml.bestTree").newick
-
-
 
 
     def write_trees(self):
@@ -375,6 +418,18 @@ class Coalseq:
             with open(dirname_seqs+'/'+str(filenum)+'.txt','w') as f:
                 for item in clades:
                     f.write('%s\n' % item)
+
+
+
+
+
+def get_clades(ttree):
+    clades = {}
+    for node in ttree.treenode.traverse():
+        clade = set(i.name for i in node.get_leaves())
+        if len(clade) > 1 and len(clade) < ttree.ntips:
+            clades[node.idx] = clade
+    return clades
 
 
 
