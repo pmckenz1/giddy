@@ -191,7 +191,7 @@ class Coalseq:
         # format names for writing to phylip file:
         names = sorted(self.tree.get_tip_labels())
         longname = max([len(i) for i in names]) + 1
-        printstr = ">{:<" + str(longname) + "} "
+        printstr = "{:<" + str(longname) + "} "
         names = [printstr.format(i).encode() for i in names]
 
         # write sequence data as hdf5 array (todo: could chunk vertically)
@@ -250,32 +250,6 @@ class Coalseq:
 class Deprecated:
     def __init__(self):
         pass
-        
-    def raxml_inference(self, physeq):
-        "not currently used"
-        mltree = np.nan
-        if nsnps > 0:
-            # write to a temp file for raxml
-            with open(fname, 'w') as temp:
-                temp.write("\n".join(physeq))
-
-            platform = ("linux" if "linux" in sys.platform else "macos")
-            proc2 = subprocess.Popen([
-                '../bins/raxml-ng_v0.7.0_{}_x86_64'.format(platform),
-                '--msa', fname, 
-                '--model', 'JC',  # 'GTR+G',
-                '--threads', '1',
-                '--redo',
-                ], 
-                stderr=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-            )
-
-            # check for errors
-            out, _ = proc2.communicate()
-            if proc2.returncode:
-                raise Exception("raxml error: {}".format(out.decode()))
-            mltree = toytree.tree(fname + ".raxml.bestTree").newick
 
 
     def write_trees(self):
@@ -414,6 +388,7 @@ class Deprecated:
 
 
 def get_clades(ttree):
+    "Used internally by _get_clade_table()"
     clades = {}
     for node in ttree.treenode.traverse():
         clade = set(i.name for i in node.get_leaves())
