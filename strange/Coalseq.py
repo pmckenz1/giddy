@@ -73,6 +73,9 @@ class Coalseq:
         self._get_clade_table()
         self._get_sequences()
 
+        # write results to disk in workdir
+        self.tree.write(
+            os.path.join(self.workdir, self.name + ".newick"))
         self.clade_table.to_csv(
             os.path.join(self.workdir, self.name + ".clade_table.csv"))
         self.tree_table.to_csv(
@@ -179,19 +182,15 @@ class Coalseq:
 
 
     def _get_sequences(self):
-        """
-        Generate sequence data on genealogies and get nsnps and inferred 
-        raxml tree and store the results in the tree table. 
-        """
+        "Generate sequence data on genealogies, get nsnps, write to phylip."
         # init the supermatrix
         seqarr = np.zeros((self.ntips, self.tree_table.end.max()), dtype=bytes)
 
-        # submit jobs to run asynchronously in parallel
+        # TODO: submit jobs to run asynchronously in parallel
         for idx in self.tree_table.index:
             arr, nsnps = self._call_seqgen_on_mstree(idx)
 
             # append tree to the tree table
-            # self.tree_table.loc[idx, 'mltree'] = mltree
             self.tree_table.loc[idx, 'nsnps'] = int(nsnps)
 
             # fill sequences into the supermatrix
@@ -211,7 +210,6 @@ class Coalseq:
                 )
             del seqarr
  
-
 
     def _call_seqgen_on_mstree(self, idx):
         """
