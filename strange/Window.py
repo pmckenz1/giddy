@@ -3,12 +3,16 @@
 from __future__ import print_function
 
 import os
-import sys
-import h5py
-import toyplot
-import toytree
 import numpy as np
 import subprocess
+
+
+# # suppress the terrible h5 warning
+# import warnings
+# with warnings.catch_warnings(): 
+#     warnings.filterwarnings("ignore", category=FutureWarning)
+#     import h5py
+
 
 class Window:
     def __init__(self,
