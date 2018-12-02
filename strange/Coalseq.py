@@ -73,12 +73,10 @@ class Coalseq:
         self._get_clade_table()
         self._get_sequences()
 
-
-        # save tree_table and seqarr to disk
-        #with open(os.path.join(self.workdir, self.name + ".phy"), 'w') as out:
-        #    pass # out.write()       
-        #    self.seqarr 
-        #self.tree_table.to_csv()
+        self.clade_table.to_csv(
+            os.path.join(self.workdir, self.name + ".clade_table.csv"))
+        self.tree_table.to_csv(
+            os.path.join(self.workdir, self.name + ".tree_table.csv"))
 
 
     def _get_demography(self):
@@ -145,10 +143,10 @@ class Coalseq:
                 int(tree.get_time(tree.get_root())) for tree 
                 in self.treeseq.trees()], 
             "mstree": [tree.newick() for tree in self.treeseq.trees()], 
-            "treematch": [
-                toytree.tree(tree.newick()).treenode.robinson_foulds(
-                    self.tree, topology_only=True)[0] == 0 
-                for tree in self.treeseq.trees()], 
+            # "treematch": [
+            #     toytree.tree(tree.newick()).treenode.robinson_foulds(
+            #         self.tree, topology_only=True)[0] == 0 
+            #     for tree in self.treeseq.trees()], 
         })
         # drop intervals of length zero
         self.tree_table = self.tree_table[self.tree_table.length > 0]
