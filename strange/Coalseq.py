@@ -4,7 +4,6 @@ from __future__ import print_function
 
 import os
 import re
-import sys
 import subprocess
 import tempfile
 
@@ -12,20 +11,12 @@ import toytree
 import numpy as np
 import pandas as pd
 
-
-# import toyplot
-# from numba import jit
-# from scipy import stats
-# import seaborn as sns
-# from matplotlib import pyplot as plt
-
-
 # suppress the terrible h5 warning
 import warnings
 with warnings.catch_warnings(): 
     warnings.filterwarnings("ignore", category=FutureWarning)
-    import msprime as ms
     import h5py
+    import msprime as ms
 
 
 class Coalseq:
@@ -62,12 +53,11 @@ class Coalseq:
         self.treeseq = None
         self.tree_table = None
         self.clade_table = None
-        self.seqarr = os.path.join(self.workdir, self.name + ".phy")
         self.database = os.path.join(self.workdir, self.name + ".hdf5")
         if not os.path.exists(self.workdir):
             os.makedirs(self.workdir)
 
-        # fill treeseq, tree_table, and seqarr...
+        # fill treeseq, tree_table, and seqarr which is written to .hdf5
         self._simulate()
         self._get_tree_table()
         self._get_clade_table()
@@ -198,17 +188,19 @@ class Coalseq:
             end = self.tree_table.end[idx]
             seqarr[:, start:end] = arr
 
+        # format names for writing to phylip file:
         names = sorted(self.tree.get_tip_labels())
         longname = max([len(i) for i in names]) + 1
-        printstr = ">{:<" + str(longname) + "} {}\n"
-        with open(self.seqarr, 'w') as outphy:
-            outphy.write("{} {}\n".format(*seqarr.shape))
-            for idx in range(seqarr.shape[0]):
-                outphy.write(printstr.format(
-                    names[idx],
-                    b"".join(seqarr[idx]).decode())
-                )
-            del seqarr
+        printstr = ">{:<" + str(longname) + "} "
+        names = [printstr.format(i).encode() for i in names]
+
+        # write sequence data as hdf5 array (todo: could chunk vertically)
+        with h5py.File(self.database, 'w') as io5:
+            # store name order (alphanumeric)
+            io5.attrs["names"] = names
+
+            # store sequence array
+            io5["seqarr"] = seqarr
  
 
     def _call_seqgen_on_mstree(self, idx):
@@ -254,7 +246,11 @@ class Coalseq:
         return sarr, nsnps
 
 
-    ##################################################################
+
+class Deprecated:
+    def __init__(self):
+        pass
+        
     def raxml_inference(self, physeq):
         "not currently used"
         mltree = np.nan
@@ -414,8 +410,6 @@ class Coalseq:
             with open(dirname_seqs+'/'+str(filenum)+'.txt','w') as f:
                 for item in clades:
                     f.write('%s\n' % item)
-
-
 
 
 
