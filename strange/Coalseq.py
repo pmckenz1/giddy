@@ -32,6 +32,7 @@ class Coalseq:
         length=10000,
         mutation_rate=1e-8,
         recombination_rate=1e-8,
+        get_sequences = True,
         random_seed=None,
         ):
        
@@ -61,7 +62,8 @@ class Coalseq:
         self._simulate()
         self._get_tree_table()
         self._get_clade_table()
-        self._get_sequences()
+        if get_sequences:
+            self._get_sequences()
 
         # write results to disk in workdir
         self.tree.write(
@@ -142,7 +144,8 @@ class Coalseq:
             #     for tree in self.treeseq.trees()], 
         })
         # drop intervals of length zero
-        self.tree_table = self.tree_table[self.tree_table.length > 0]
+        # (keeping these for now, sorting out later)
+        # self.tree_table = self.tree_table[self.tree_table.length > 0]
 
 
     def _get_clade_table(self):
@@ -209,7 +212,7 @@ class Coalseq:
         a model of sequence substitution. Pass sequence to raxml to get mltree. 
         """
         # write tree to a file
-        fname = os.path.join(tempfile.tempdir, str(os.getpid()) + ".tmp")
+        fname = os.path.join(tempfile.gettempdir(), str(os.getpid()) + ".tmp")
         with open(fname, 'w') as temp:
             temp.write(self.tree_table.mstree[idx])
 
@@ -245,6 +248,20 @@ class Coalseq:
         nsnps = np.invert(np.all(arr == arr[0], axis=0)).sum()
         return sarr, nsnps
 
+
+    def get_clade_lengths_bp(self, cidx):
+        lengths = []
+        flen = 0
+        for idx in self.clade_table.index:
+            # extend fragment
+            if self.clade_table.loc[idx, cidx] == 1 and idx in self.tree_table.index:
+                flen += self.tree_table.loc[idx][1]
+            # terminate fragment
+            else:
+                if flen:
+                    lengths.append(flen)
+                    flen = 0
+        return np.array(lengths)
 
 
 class Deprecated:
@@ -387,6 +404,7 @@ class Deprecated:
 
 
 
+
 def get_clades(ttree):
     "Used internally by _get_clade_table()"
     clades = {}
@@ -395,6 +413,7 @@ def get_clades(ttree):
         if len(clade) > 1 and len(clade) < ttree.ntips:
             clades[node.idx] = clade
     return clades
+
 
 
 
