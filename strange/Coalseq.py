@@ -58,6 +58,10 @@ class Coalseq:
         if not os.path.exists(self.workdir):
             os.makedirs(self.workdir)
 
+        # clade search output attrs
+        self.cladeslist = None
+        self.cladesarr = None
+
         # fill treeseq, tree_table, and seqarr which is written to .hdf5
         self._simulate()
         self._get_tree_table()
@@ -262,6 +266,42 @@ class Coalseq:
                     lengths.append(flen)
                     flen = 0
         return np.array(lengths)
+
+
+    def _get_cladeslist(self):
+        cladeslist = []
+        for mstree in self.tree_table.mstree:
+            for i in get_clades(toytree.tree(mstree)).values():
+                if i not in cladeslist:
+                    cladeslist.append(i)
+        sortedlist = np.array(cladeslist)[np.argsort([len(i) for i in cladeslist])]
+        self.cladeslist = sortedlist
+
+
+    def make_cladesarr(self):
+        self._get_cladeslist()
+        cladesarr = np.zeros((len(self.tree_table.mstree),len(self.cladeslist)),dtype=np.int8)
+        for row in range(len(self.tree_table.mstree)):
+            idxs= np.hstack([np.where(np.equal(i,
+                              self.cladeslist)) for i in get_clades(toytree.tree(self.tree_table.mstree[row])).values()])[0]
+            cladesarr[row,idxs] = 1
+        self.cladesarr = cladesarr
+
+    def query_clades(self,clades):
+        '''
+        clades is a list of sets of taxa. 
+
+        For each row of cladesarr, we're interested in 
+        whether all of our queried are present (i.e. "does this topology exist")
+
+        returns an boolean array of len = number of mstrees where each index corresponds
+        to whether that mstree contains all clades queried.
+        '''
+        all_clades_present = np.zeros((len(self.cladesarr)),dtype=np.bool)
+        presentidxs = set(np.hstack([np.where(np.equal(i,self.cladeslist)) for i in clades])[0])
+        for idx,i in enumerate(self.cladesarr):
+            all_clades_present[idx] = presentidxs.issubset(set(np.where(i)[0]))
+        return(all_clades_present)
 
 
 class Deprecated:
