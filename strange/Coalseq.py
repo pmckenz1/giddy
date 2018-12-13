@@ -185,15 +185,16 @@ class Coalseq:
 
         # TODO: submit jobs to run asynchronously in parallel
         for idx in self.tree_table.index:
-            arr, nsnps = self._call_seqgen_on_mstree(idx)
+            if self.tree_table.length[idx]:
+                arr, nsnps = self._call_seqgen_on_mstree(idx)
 
-            # append tree to the tree table
-            self.tree_table.loc[idx, 'nsnps'] = int(nsnps)
+                # append tree to the tree table
+                self.tree_table.loc[idx, 'nsnps'] = int(nsnps)
 
-            # fill sequences into the supermatrix
-            start = self.tree_table.start[idx]
-            end = self.tree_table.end[idx]
-            seqarr[:, start:end] = arr
+                # fill sequences into the supermatrix
+                start = self.tree_table.start[idx]
+                end = self.tree_table.end[idx]
+                seqarr[:, start:end] = arr
 
         # format names for writing to phylip file:
         names = sorted(self.tree.get_tip_labels())
