@@ -133,8 +133,9 @@ class SlidingWindow:
 
 
 
-    def _make_nexus(seqfile,start,stop,outdir):
-        db = h5py.File(seqfile)
+    def _make_nexus(self,start,stop):
+        outdir = self.workdir + '/' + self.name + "_nexus"
+        db = h5py.File(self.database)
         seqs = db['seqarr'][:,start:stop]
         if not os.path.exists(outdir):
             os.mkdir(outdir)
@@ -148,23 +149,23 @@ class SlidingWindow:
         with open(outdir + '/' + str(start)+'_'+str(stop)+'.nexus','w') as f:
             f.write(
 
-    '''#NEXUS 
+'''#NEXUS 
 
-    Begin data;
-        Dimensions ntax={} nchar={};
-        Format datatype=DNA gap=- missing=? matchchar=. interleave;
-        Matrix
+Begin data;
+    Dimensions ntax={} nchar={};
+    Format datatype=DNA gap=- missing=? matchchar=. interleave;
+    Matrix
 
-    {}  ;
-    end;
+{}  ;
+end;
 
-    begin mrbayes;
-       set autoclose=yes nowarn=yes;
-       lset nst=6 rates=invgamma;
-       mcmc nruns=1 ngen=40000 samplefreq=100 diagnfreq=1000;
-       sumt;
-    end;
-    '''.format(len(seqs),stop-start,nexlist)
+begin mrbayes;
+   set autoclose=yes nowarn=yes;
+   lset nst=6 rates=invgamma;
+   mcmc nruns=1 ngen=40000 samplefreq=100 diagnfreq=1000;
+   sumt;
+end;
+'''.format(len(seqs),stop-start,nexlist)
             )
         db.close()
 
