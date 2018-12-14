@@ -132,6 +132,42 @@ class SlidingWindow:
             os.path.join(self.workdir, self.name + ".raxml_table"))
 
 
+
+    def _make_nexus(seqfile,start,stop,outdir):
+        db = h5py.File(seqfile)
+        seqs = db['seqarr'][:,start:stop]
+        if not os.path.exists(outdir):
+            os.mkdir(outdir)
+        
+        # make a string of sequences
+        nexlist=""
+        for i in range(len(db['seqarr'][:,start:stop])):
+            nexlist = nexlist + (str(i+1) + "".join(np.repeat(" ",13-len(str(i)))) + "".join(db['seqarr'][:,start:stop][i])) + '\n'
+        
+        # write to file
+        with open(outdir + '/' + str(start)+'_'+str(stop)+'.nexus','w') as f:
+            f.write(
+
+    '''#NEXUS 
+
+    Begin data;
+        Dimensions ntax={} nchar={};
+        Format datatype=DNA gap=- missing=? matchchar=. interleave;
+        Matrix
+
+    {}  ;
+    end;
+
+    begin mrbayes;
+       set autoclose=yes nowarn=yes;
+       lset nst=6 rates=invgamma;
+       mcmc nruns=1 ngen=40000 samplefreq=100 diagnfreq=1000;
+       sumt;
+    end;
+    '''.format(len(seqs),stop-start,nexlist)
+            )
+        db.close()
+
     
     def run_mb_sliding_windows(self, window_size, slide_interval):
         """
