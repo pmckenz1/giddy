@@ -178,6 +178,27 @@ end;
         pass
 
 
+def run_mb(mb_binary, database, start, stop):
+    "Run a temp nexus file, run mb and return array of newick trees and probs"
+    
+    # get sequence interval and count nsnps
+    with h5py.File(database, 'r') as io5:
+        names = io5.attrs["names"]
+        seqs = io5["seqarr"][:, start:stop]
+
+    # build nexus format string
+    # make a string of sequences
+    nexlist=""
+    for i in range(len(db['seqarr'][:,start:stop])):
+        nexlist = nexlist + (names[i] + "".join(np.repeat(" ",13-len(names[i])) + "".join(db['seqarr'][:,start:stop][i])) + '\n'
+    # write nexus to a tmp file
+
+    # run mb on phylip file
+
+    # check for errors
+
+    pass
+
 
 def run_raxml(raxml_binary, database, start, stop):
     "Build a temp phylip file, run raxml and return ML toytree"
