@@ -44,6 +44,10 @@ class SlidingWindow:
             bins_path,
             'raxml-ng_v0.7.0_{}_x86_64'.format(platform)
         ))
+        self.mb_binary = os.path.realpath(os.path.join(
+            bins_path,
+            'mb'
+        ))
 
         # load Coalseq results from paths
         self.tree = toytree.tree(os.path.join(self.workdir, name + ".newick"))
@@ -55,6 +59,7 @@ class SlidingWindow:
 
         # new attrs to fill
         self.raxml_table = pd.DataFrame({})
+        self.mb_database = None
         self.snames = None
         self.seqarr = None
         
@@ -133,21 +138,92 @@ class SlidingWindow:
 
 
 
-    def _make_nexus(self,start,stop):
-        outdir = self.workdir + '/' + self.name + "_nexus"
-        db = h5py.File(self.database)
-        seqs = db['seqarr'][:,start:stop]
-        if not os.path.exists(outdir):
-            os.mkdir(outdir)
-        
-        # make a string of sequences
-        nexlist=""
-        for i in range(len(db['seqarr'][:,start:stop])):
-            nexlist = nexlist + (str(i+1) + "".join(np.repeat(" ",13-len(str(i)))) + "".join(db['seqarr'][:,start:stop][i])) + '\n'
-        
-        # write to file
-        with open(outdir + '/' + str(start)+'_'+str(stop)+'.nexus','w') as f:
-            f.write(
+    def run_mb_sliding_windows(self, window_size, slide_interval,ipyclient=None):
+        """
+        Write temp nexus files, infer mb trees, store in hdf5, cleanup.
+        Pull chunks of sequence from seqarray in windows defined by tree_table
+        format as nexus and pass to mb subprocess.
+        """
+        # open h5 view to file
+        with h5py.File(self.database, 'r') as io5:
+            dims = io5["seqarr"].shape
+
+        # how many windows in chromosome? 
+        nwindows = int((dims[1]) / slide_interval)
+        assert nwindows, "No windows in data"
+
+        # get all intervals in a generator
+        starts = np.array(range(0, dims[1], slide_interval))
+        stops = starts + window_size
+        if stops[-1] > dims[1]:
+            stops[-1] = dims[1]
+        intervals = zip(starts, stops)
+
+        # start a hdf5 file for holding sliding window results
+        self.mb_database = self.workdir + '/' + self.name + '_mb.hdf5'
+        mbdb = h5py.File(self.mb_database)
+
+        mbdb.create_dataset('_intervals', data=np.array(intervals))
+
+        # start a tempdir
+        tempfile.gettempdir()
+
+        # parallelize tree inference
+        if ipyclient:
+            self.ipyclient = ipyclient
+        if self.ipyclient:
+            time0 = time.time()
+            lbview = self.ipyclient.load_balanced_view()
+
+            # infer trees by pulling in sequence from hdf5 on remote engines
+            rasyncs = {}
+            for idx, (start, stop) in enumerate(intervals):
+                args = (self.mb_binary, self.database, start, stop)
+                rasyncs[idx] = lbview.apply(run_mb, *args)
+
+            # track progress and collect results.
+            done = 0
+            while 1:
+                finished = [i for i in rasyncs if rasyncs[i].ready()]
+                for idx in finished:
+                    if rasyncs[idx].successful():
+                        arr = rasyncs[idx].get()
+                        mbdb.create_dataset(str(idx), data=arr)
+                        del rasyncs[idx]
+                        done += 1
+                    else:
+                        raise Exception(rasyncs[idx].get())
+                # progress
+                progressbar(done, nwindows, time0, "inferring mb trees")
+                time.sleep(0.5)
+                if not rasyncs:
+                    break
+
+        # non-parallel code
+        else:
+            print("no engines started, shutting down...")
+            pass
+
+        mbdb.close()
+
+
+def run_mb(mb_binary, database, start, stop):
+    "Build a temp nexus file, run mb and return array of newick trees and probs"
+    
+    # get sequence interval and count nsnps
+    with h5py.File(database, 'r') as io5:
+        names = io5.attrs["names"]
+        seqs = io5["seqarr"][:, start:stop]
+
+    # build nexus format string
+    # make a string of sequences
+    nexlist=""
+    for i in range(len(names)):
+        nexlist = nexlist + (names[i] + "".join(np.repeat(" ",13-len(names[i]))) + "".join(seqs[i])) + '\n'
+    # write nexus to a tmp file
+    fname = os.path.join(tempfile.gettempdir(), str(os.getpid()) + ".tmp")
+    with open(fname, 'w') as temp:
+        temp.write(
 
 '''#NEXUS 
 
@@ -166,38 +242,32 @@ begin mrbayes;
    sumt;
 end;
 '''.format(len(seqs),stop-start,nexlist)
-            )
-        db.close()
+        )
 
-    
-    def run_mb_sliding_windows(self, window_size, slide_interval):
-        """
-        Run mrbayes on a sliding window and summarize the posterior 
-        distribution of gene trees like in mbsum, save to file or table...
-        """
-        pass
-
-
-def run_mb(mb_binary, database, start, stop):
-    "Run a temp nexus file, run mb and return array of newick trees and probs"
-    
-    # get sequence interval and count nsnps
-    with h5py.File(database, 'r') as io5:
-        names = io5.attrs["names"]
-        seqs = io5["seqarr"][:, start:stop]
-
-    # build nexus format string
-    # make a string of sequences
-    nexlist=""
-    for i in range(len(db['seqarr'][:,start:stop])):
-        nexlist = nexlist + (names[i] + "".join(np.repeat(" ",13-len(names[i])) + "".join(db['seqarr'][:,start:stop][i])) + '\n'
-    # write nexus to a tmp file
-
-    # run mb on phylip file
+    # run mb on nexus file
+    proc = subprocess.Popen([
+        mb_binary,
+        fname, 
+        ], 
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
 
     # check for errors
+    out, _ = proc.communicate()
+    if proc.returncode:
+        raise Exception("mb error: {}".format(out.decode()))
 
-    pass
+    # read in inputs
+    with open(fname+'.trprobs') as f:
+        dat=f.read()
+        dat = dat.split('\n')
+        dat = [q.lstrip() for q in dat]
+        dat = list(np.array(dat)[np.array([q[0:4] == 'tree' for q in dat])])
+        trees = [q.split(' ')[-1] for q in dat]
+        probs = [float(q.split('p = ')[1].split(', ')[0]) for q in dat]
+
+    return np.array([trees,probs])
 
 
 def run_raxml(raxml_binary, database, start, stop):
@@ -238,7 +308,6 @@ def run_raxml(raxml_binary, database, start, stop):
     return nsnps, toytree.tree(fname + ".raxml.bestTree").newick
 
 
-
 def progressbar(finished, total, start, message):
     progress = 100 * (finished / float(total))
     hashes = '#' * int(progress / 5.)
@@ -248,7 +317,6 @@ def progressbar(finished, total, start, message):
         .format(hashes + nohash, int(progress), elapsed, message),
         end="")
     sys.stdout.flush()    
-
 
 
 class Window:
