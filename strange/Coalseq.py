@@ -231,10 +231,6 @@ class Coalseq:
         with open(fname, 'w') as temp:
             temp.write(self.tree_table.mstree[idx])
 
-        # seq-gen path:
-        sgpath = module_path() + '/../bins/seq-gen'
-        if sys.platform == "linux" or sys.platform == "linux2":
-            sgpath = sgpath + '-linux'
         # write sequence data to a tempfile
         proc1 = subprocess.Popen([
             self.seqgen_binary, 
