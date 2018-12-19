@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import tempfile
+import sys
 
 import toytree
 import numpy as np
@@ -49,6 +50,15 @@ class Coalseq:
         )
         self.ntips = self.tree.ntips
         self.random_seed = random_seed
+
+        # find seq-gen binary
+        strange_path = os.path.dirname(os.path.dirname(__file__))
+        bins_path = os.path.join(strange_path, "bins")
+        platform = ("linux" if "linux" in sys.platform else "macos")
+        self.seqgen_binary = os.path.realpath(os.path.join(
+            bins_path,
+            'seq-gen-{}'.format(platform)
+        ))
 
         # output attributes:
         self.treeseq = None
@@ -221,9 +231,13 @@ class Coalseq:
         with open(fname, 'w') as temp:
             temp.write(self.tree_table.mstree[idx])
 
+        # seq-gen path:
+        sgpath = module_path() + '/../bins/seq-gen'
+        if sys.platform == "linux" or sys.platform == "linux2":
+            sgpath = sgpath + '-linux'
         # write sequence data to a tempfile
         proc1 = subprocess.Popen([
-            "seq-gen", 
+            self.seqgen_binary, 
             "-m", "GTR", 
             "-l", str(self.tree_table.length[idx]), 
             "-s", str(self.mutation_rate),
@@ -455,13 +469,3 @@ def get_clades(ttree):
             clades[node.idx] = clade
     return clades
 
-
-
-
-# #@jit
-# def get_dists(breaks):
-#     num = len(breaks)
-#     distarr = np.zeros((num-1))
-#     for i in range(num-1):
-#         distarr[i]=breaks[i+1]-breaks[i]
-#     return(distarr)

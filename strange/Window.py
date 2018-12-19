@@ -60,6 +60,7 @@ class SlidingWindow:
         # new attrs to fill
         self.raxml_table = pd.DataFrame({})
         self.mb_database = None
+        self.mb_database_mstrees = None
         self.snames = None
         self.seqarr = None
         
@@ -195,6 +196,77 @@ class SlidingWindow:
                         raise Exception(rasyncs[idx].get())
                 # progress
                 progressbar(done, nwindows, time0, "inferring mb trees")
+                time.sleep(0.5)
+                if not rasyncs:
+                    break
+
+        # non-parallel code
+        else:
+            print("no engines started, shutting down...")
+            pass
+
+        mbdb.close()
+
+
+    def run_mb_mstrees(self,ipyclient=None):
+        """
+        Write temp nexus files, infer mb trees, store in hdf5, cleanup.
+        Pull chunks of sequence from seqarray in windows defined by tree_table
+        format as nexus and pass to mb subprocess.
+        """
+        # open h5 view to file
+        with h5py.File(self.database, 'r') as io5:
+            dims = io5["seqarr"].shape
+
+        # how many windows in chromosome? 
+        nwindows = np.sum(self.tree_table.length != 0)
+        assert nwindows, "No windows in data"
+
+        starts = self.tree_table.start
+        stops = self.tree_table.end
+
+        filterarr = np.array(((starts-stops) != 0))
+
+        # get all intervals in a generator
+        intervals = zip(self.tree_table.start[filterarr], 
+            self.tree_table.end[filterarr])
+
+        # start a hdf5 file for holding sliding window results
+        self.mb_database_mstrees = self.workdir + '/' + self.name + '_mb_mstrees.hdf5'
+        mbdb = h5py.File(self.mb_database_mstrees)
+
+        mbdb.create_dataset('_intervals', data=np.array(intervals))
+
+        # start a tempdir
+        tempfile.gettempdir()
+
+        # parallelize tree inference
+        if ipyclient:
+            self.ipyclient = ipyclient
+        if self.ipyclient:
+            time0 = time.time()
+            lbview = self.ipyclient.load_balanced_view()
+
+            # infer trees by pulling in sequence from hdf5 on remote engines
+            rasyncs = {}
+            for idx, (start, stop) in enumerate(intervals):
+                args = (self.mb_binary, self.database, start, stop)
+                rasyncs[idx] = lbview.apply(run_mb, *args)
+
+            # track progress and collect results.
+            done = 0
+            while 1:
+                finished = [i for i in rasyncs if rasyncs[i].ready()]
+                for idx in finished:
+                    if rasyncs[idx].successful():
+                        arr = rasyncs[idx].get()
+                        mbdb.create_dataset(str(idx), data=arr)
+                        del rasyncs[idx]
+                        done += 1
+                    else:
+                        raise Exception(rasyncs[idx].get())
+                # progress
+                progressbar(done, nwindows, time0, "inferring mb trees on mstrees")
                 time.sleep(0.5)
                 if not rasyncs:
                     break
@@ -418,4 +490,14 @@ class Window:
             raxml = subprocess.Popen(['./raxml-ng','--msa', directory_name + '/' + name,'-model','GTR+G','-threads','2','--log','ERROR'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             raxml.communicate()
 
+# copied from https://stackoverflow.com/questions/2632199/how-do-i-get-the-path-of-the-current-executed-file-in-python
+# for locating module directory
+def we_are_frozen():
+    # All of the modules are built-in to the interpreter, e.g., by py2exe
+    return hasattr(sys, "frozen")
 
+def module_path():
+    encoding = sys.getfilesystemencoding()
+    if we_are_frozen():
+        return os.path.dirname(unicode(sys.executable, encoding))
+    return os.path.dirname(unicode(__file__, encoding))
