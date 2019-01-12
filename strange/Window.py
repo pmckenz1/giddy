@@ -11,6 +11,9 @@ import tempfile
 import numpy as np
 import pandas as pd
 import toytree
+from numba import jit
+from collections import Counter
+from copy import deepcopy
 
 # suppress the terrible h5 warning
 import warnings
@@ -490,14 +493,104 @@ class Window:
             raxml = subprocess.Popen(['./raxml-ng','--msa', directory_name + '/' + name,'-model','GTR+G','-threads','2','--log','ERROR'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             raxml.communicate()
 
-# copied from https://stackoverflow.com/questions/2632199/how-do-i-get-the-path-of-the-current-executed-file-in-python
-# for locating module directory
-def we_are_frozen():
-    # All of the modules are built-in to the interpreter, e.g., by py2exe
-    return hasattr(sys, "frozen")
 
-def module_path():
-    encoding = sys.getfilesystemencoding()
-    if we_are_frozen():
-        return os.path.dirname(unicode(sys.executable, encoding))
-    return os.path.dirname(unicode(__file__, encoding))
+class MB_posts:
+    def __init__(self,
+        posterior_path):
+        mbinfs = h5py.File(name=posterior_path)
+        self.posterior_list = [np.array(mbinfs[str(i)]) for i in range(len(mbinfs.keys())-1)]
+        mbinfs.close()
+
+    def resample_neighbors(self,
+        num_times,
+        prop,
+        resamp_num=300):
+        full_list = self.posterior_list
+        for i in range(num_times):
+            newfull_list = []
+            for curridx in range(len(full_list)):
+                ps = full_list[curridx][1]
+                resamp = np.random.choice(len(ps),p=ps.astype(float)/np.sum(ps.astype(float)),size=np.int(resamp_num*prop))
+                newsamped = full_list[curridx][0][resamp]
+                if curridx != 0 and curridx != (len(full_list)-1):
+                    leftright = np.array([curridx-1,curridx+1])
+                elif curridx == 0:
+                    leftright = np.array([curridx+1])
+                else:
+                    leftright = np.array([curridx-1])
+
+                remaining = np.int(np.round((1-prop)*resamp_num))
+                neighborsamps = []
+                for neighbor in leftright:
+                    ps = full_list[neighbor][1]
+                    neighborsamps.extend(full_list[neighbor][0][np.random.choice(len(ps),p=ps.astype(float)/np.sum(ps.astype(float)),size=np.int(remaining/len(leftright)))])
+
+                newsamped = np.hstack([newsamped,neighborsamps])
+                countitem = Counter(newsamped)
+                newfull_list.append([np.array(countitem.keys()),np.array(countitem.values()).astype(float)/np.sum(countitem.values())])
+            del full_list
+            full_list = deepcopy(newfull_list)
+        return(full_list)
+
+    def resample_index(self,full_list,orig_index,samp_index,prop,resamp_num=300):
+        '''
+        hand this a list (probably an adjusted copy of self.posterior list) to 
+        resample a particular index
+        '''
+        newfull_list = []
+        curridx = orig_index
+        ps = full_list[curridx][1]
+        resamp = np.random.choice(len(ps),p=ps.astype(float)/np.sum(ps.astype(float)),size=np.int(resamp_num*prop))
+        newsamped = full_list[curridx][0][resamp]
+
+        remaining = np.int(np.round((1-prop)*resamp_num))
+        neighborsamps = []
+        neighbor = samp_index
+        ps = full_list[neighbor][1]
+        neighborsamps.extend(full_list[neighbor][0][np.random.choice(len(ps),p=ps.astype(float)/np.sum(ps.astype(float)),size=np.int(remaining))])
+
+        newsamped = np.hstack([newsamped,neighborsamps])
+        countitem = Counter(newsamped)
+        newfull_list.append([np.array(countitem.keys()),np.array(countitem.values()).astype(float)/np.sum(countitem.values())])
+        return(newfull_list)
+
+
+    def resample_normal(self,
+                        num_times,
+                        scale,
+                        prop,
+                        resamp_num):
+        '''
+        This resamples across all mb posterior distributions a specific number of times. 
+        Sliding across all gene trees: For each tree, an integer is drawn from a normal distribution
+        with mean of 0 and a specified variance. The corresponding posterior distribution away from the
+        focal distribution is resampled from with a designated proportion.
+        
+        full_list: list of all posterior distributions of gene trees.
+        num_times: number of times to resample all of the gene trees
+        scale: the variance of the normal distribution used to draw a nearby tree to sample from
+        prop: the proportion of resamples to be taken from the focal gene tree, as opposed to nearby trees
+        resamp_num: the number of total resample draws, later normalized to floats between 0 and 1.
+        '''
+        full_list = self.posterior_list
+        for _ in range(num_times):
+            new_list = []
+            listlen = len(full_list)
+            for idx in range(listlen):
+                newidx = self.get_samp_index(idx,scale)
+                if newidx < 0 or newidx >= listlen:
+                    newidx = idx + (newidx - idx)*(-1)
+                new_list.append(
+                    self.resample_index(full_list,
+                           orig_index=idx,
+                           samp_index=newidx,
+                           prop = prop,
+                           resamp_num=resamp_num)[0]
+                )
+            full_list = deepcopy(new_list)
+        return(full_list)
+
+    def get_samp_index(self,starting_idx, scale):
+        return(np.int(starting_idx + np.round(np.random.normal(loc=0,scale=scale))))
+
+
