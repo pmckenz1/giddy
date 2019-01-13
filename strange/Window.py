@@ -208,6 +208,26 @@ class SlidingWindow:
             print("no engines started, shutting down...")
             pass
 
+
+        nummbtrees = len(mbdb.keys())-1
+        fullset = set
+        for i in range(nummbtrees):
+            fullset = fullset.union(set(mbdb[str(i)][0]))
+        df = pd.DataFrame(list(enumerate(fullset)),columns=['idx','newick'])
+        df.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_topokey.csv')
+
+        print('\nconsolidating...')
+
+        tot_list = []
+        for _ in range(nummbtrees):
+            trees = mbdb[str(_)][0]
+            probs = mbdb[str(_)][1]
+            for loop in range(len(trees)):
+                tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
+        totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+
+        totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_post.csv')
+
         mbdb.close()
 
 
@@ -278,6 +298,26 @@ class SlidingWindow:
         else:
             print("no engines started, shutting down...")
             pass
+
+
+        nummbtrees = len(mbdb.keys())-1
+        fullset = set
+        for i in range(nummbtrees):
+            fullset = fullset.union(set(mbdb[str(i)][0]))
+        df = pd.DataFrame(list(enumerate(fullset)),columns=['idx','newick'])
+        df.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_topokey.csv')
+
+        print('\nconsolidating...')
+
+        tot_list = []
+        for _ in range(nummbtrees):
+            trees = mbdb[str(_)][0]
+            probs = mbdb[str(_)][1]
+            for loop in range(len(trees)):
+                tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
+        totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+
+        totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_post.csv')
 
         mbdb.close()
 
