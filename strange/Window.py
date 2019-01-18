@@ -534,7 +534,41 @@ class Window:
             raxml.communicate()
 
 
-class MB_posts:
+class MB_posts_csv:
+    def __init__(self,
+        posterior_path):
+        self.mbcsv = pd.read_csv(posterior_path,index_col=0)
+
+    def update_full(self,
+                df,
+                prop = .8,
+                num_resamp = 300,
+                scale = 1):
+        tot_list = []
+        num_focal = np.int(np.round(num_resamp*prop))
+        num_non = num_resamp - num_focal
+        nummbtrees = np.max(df['idx'])
+    #    newfile=h5py.File('../tests/test.hdf5')
+        for idx in range(nummbtrees):
+            samp_idx = np.int(np.round(np.random.normal(idx,scale)))
+            if samp_idx < 0 or samp_idx >= nummbtrees:
+                samp_idx = idx + (samp_idx-idx)*-1
+
+            newdraw = np.hstack([make_draw(df,idx,num_focal),make_draw(df, samp_idx, num_non)])
+            counts = Counter(newdraw)
+    #        newfile[str(idx)] = np.array(zip(np.repeat(0,len(counts)),
+    #                                counts.keys(),
+    #                                np.array(counts.values()).astype(float)/np.sum(counts.values())))
+            tot_list.extend(zip(np.repeat(idx,len(counts)),
+                                counts.keys(),
+                                np.array(counts.values()).astype(float)/np.sum(counts.values())))
+    #    newfile.close()
+        return(pd.DataFrame(tot_list,columns=['idx','topo_idx','prob']))
+
+class MB_posts_hdf5:
+    # uses hdf5
+
+
     def __init__(self,
         posterior_path):
         mbinfs = h5py.File(name=posterior_path)
@@ -632,5 +666,12 @@ class MB_posts:
 
     def get_samp_index(self,starting_idx, scale):
         return(np.int(starting_idx + np.round(np.random.normal(loc=0,scale=scale))))
+
+@jit
+def make_draw(self,df,idx,size):
+    topos = df['topo_idx'][df['idx'] == idx]
+    probs = df['prob'][df['idx'] == idx]
+    probs = probs / np.sum(probs)
+    return(np.random.choice(topos,p=probs,replace=True,size = size))
 
 
