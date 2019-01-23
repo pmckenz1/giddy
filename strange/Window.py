@@ -218,15 +218,41 @@ class SlidingWindow:
 
         print('\nconsolidating...')
 
-        tot_list = []
-        for _ in range(nummbtrees):
-            trees = mbdb[str(_)][0]
-            probs = mbdb[str(_)][1]
-            for loop in range(len(trees)):
-                tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
-        totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+        num_mb_gens = 4000
 
-        totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_post.csv')
+        gtarr = np.zeros((num_mb_gens,nummbtrees),dtype=np.int32)
+
+        for column_idx in range(nummbtrees):
+            topos = np.array(list(mbdb[str(column_idx)]))[0]
+            topo_arr = np.zeros((topos.shape),dtype=np.int)
+            for topoidx in range(len(topos)):
+                topo_arr[topoidx] = np.argmax(df['newick'] == topos[topoidx])
+
+            probs = (np.array(list(mbdb[str(column_idx)]))[1]).astype(float)
+            probsum = np.sum(probs)
+            for probidx in range(len(probs)):
+                probs[probidx] = probs[probidx]/probsum
+            probs = (probs*num_mb_gens).astype(int)
+            probs[0:(num_mb_gens-np.sum(probs))] = probs[0:(num_mb_gens-np.sum(probs))] + 1
+
+            col = np.zeros((num_mb_gens),dtype=np.int64)
+            counter = 0
+            for topoidx in range(len(topo_arr)):
+                col[counter:(counter+probs[topoidx])] = np.repeat(topo_arr[topoidx],probs[topoidx])
+                counter += probs[topoidx]
+            
+            gtarr[:,column_idx] = col
+        pd.DataFrame(gtarr).to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mcmc.csv')
+
+        #tot_list = []
+        #for _ in range(nummbtrees):
+        #    trees = mbdb[str(_)][0]
+        #    probs = mbdb[str(_)][1]
+        #    for loop in range(len(trees)):
+        #        tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
+        #totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+
+        #totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_post.csv')
 
         mbdb.close()
 
@@ -309,15 +335,41 @@ class SlidingWindow:
 
         print('\nconsolidating...')
 
-        tot_list = []
-        for _ in range(nummbtrees):
-            trees = mbdb[str(_)][0]
-            probs = mbdb[str(_)][1]
-            for loop in range(len(trees)):
-                tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
-        totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+        num_mb_gens = 4000
 
-        totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_post.csv')
+        gtarr = np.zeros((num_mb_gens,nummbtrees),dtype=np.int32)
+
+        for column_idx in range(nummbtrees):
+            topos = np.array(list(mbdb[str(column_idx)]))[0]
+            topo_arr = np.zeros((topos.shape),dtype=np.int)
+            for topoidx in range(len(topos)):
+                topo_arr[topoidx] = np.argmax(df['newick'] == topos[topoidx])
+
+            probs = (np.array(list(mbdb[str(column_idx)]))[1]).astype(float)
+            probsum = np.sum(probs)
+            for probidx in range(len(probs)):
+                probs[probidx] = probs[probidx]/probsum
+            probs = (probs*num_mb_gens).astype(int)
+            probs[0:(num_mb_gens-np.sum(probs))] = probs[0:(num_mb_gens-np.sum(probs))] + 1
+
+            col = np.zeros((num_mb_gens),dtype=np.int64)
+            counter = 0
+            for topoidx in range(len(topo_arr)):
+                col[counter:(counter+probs[topoidx])] = np.repeat(topo_arr[topoidx],probs[topoidx])
+                counter += probs[topoidx]
+            
+            gtarr[:,column_idx] = col
+        pd.DataFrame(gtarr).to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_mcmc.csv')
+
+        #tot_list = []
+        #for _ in range(nummbtrees):
+        #    trees = mbdb[str(_)][0]
+        #    probs = mbdb[str(_)][1]
+        #    for loop in range(len(trees)):
+        #        tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
+        #totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+
+        #totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_post.csv')
 
         mbdb.close()
 
@@ -533,6 +585,51 @@ class Window:
             raxml = subprocess.Popen(['./raxml-ng','--msa', directory_name + '/' + name,'-model','GTR+G','-threads','2','--log','ERROR'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             raxml.communicate()
 
+class MBmcmc:
+    def __init__(self,
+        posterior_path):
+        self.mbcsv = pd.read_csv(posterior_path,index_col=0)
+
+    @jit
+    def replace(self,
+                arr,
+                mixnum,
+                sd_normal):
+        # record column, row numbers for arr
+        numcols = arr.shape[1]
+        numrows = arr.shape[0]
+        
+        # use normal distribution to sample which other (or same) column to draw from, for each column
+        sc = np.array(list(range(numcols)) + np.random.normal(0,sd_normal,numcols).astype(int))
+        # reflect around upper bound
+        sc[sc >= numcols] = (numcols-1) + (numcols-1)-sc[sc >= numcols]
+        sc[sc < 0] = np.abs(sc[sc < 0])
+        
+        # make new big array to sample from (columns correspond to columns to draw from)
+        scarr = arr[sc]
+        
+        # make an array of the samples (ncols x mixnum) shape
+        choicearr = np.zeros((numcols,mixnum),dtype=np.int64)
+        for i in range(numcols):
+            choicearr[i] = np.random.choice(scarr[:,i],size=mixnum)
+            
+        # make an array of idxs to replace (for each original column) with the new samples
+        replace_idxs = np.random.randint(0,high=numrows,size=(choicearr.shape))
+        
+        # make the replacements
+        for i in range(numcols):
+            arr[:,i][replace_idxs[i]] = choicearr[i]
+
+    @jit
+    def update_x_times(self,
+                       arr,
+                       mixnum,
+                       num_times,
+                       sd_normal):
+        for i in range(num_times):
+            replace(arr,
+                    mixnum,
+                    sd_normal)
 
 class MB_posts_csv:
     def __init__(self,

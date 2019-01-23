@@ -87,6 +87,13 @@ class Coalseq:
         self.tree_table.to_csv(
             os.path.join(self.workdir, self.name + ".tree_table.csv"))
 
+        # save a key to get original tip labels back
+        idlist = []
+        for idx, label in enumerate(self.tree.get_tip_labels()):
+            idlist.append([idx+1,label])
+        pd.DataFrame(idlist).to_csv(os.path.join(self.workdir, self.name + ".tip_id.csv"))
+
+
 
     def _get_demography(self):
         "Define demographic events for msprime."

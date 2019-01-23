@@ -3,4 +3,4 @@
 __version__ = "0.2.1-dev"
 __author__ = "Patrick McKenzie"
 from .Coalseq import Coalseq
-from .Window import Window, SlidingWindow, MB_posts
+from .Window import Window, SlidingWindow, MBmcmc
