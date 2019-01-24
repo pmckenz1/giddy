@@ -552,21 +552,40 @@ def replace(arr,
     for i in range(numcols):
         arr[:,i][replace_idxs[i]] = choicearr[i]
 
+@jit
+def rmse(predictions, targets):
+    return np.sqrt(((predictions - targets) ** 2).mean())
 
 class MBmcmc:
 	def __init__(self,
-	    posterior_path):
-		self.mbcsv = np.array(pd.read_csv(posterior_path,index_col=0))
+	    name,
+	    workdir):
+		self.name = name
+		self.workdir = workdir
+
+		self.mbcsv = np.array(pd.read_csv(os.path.join(self.workdir, 
+			name + "_mb_mstrees_mcmc.csv")
+			,index_col=0))
+		self.topokey = pd.read_csv(os.path.join(self.workdir, 
+			name + "_mb_mstrees_topokey.csv"),
+			index_col=0)
+
+		self.topoprobs = np.array(self.topokey['probs'])
 
 	def update_x_times(self,
-	                   arr,
 	                   mixnum,
 	                   num_times,
 	                   sd_normal):
 	    for i in range(num_times):
-	        replace(arr,
+	        replace(self.mbcsv,
 	                mixnum,
 	                sd_normal)
+
+	def score(self):
+		counted = Counter(mode(self.mbcsv)[0])
+		expected = self.topoprobs[np.array(counted.keys())]
+		observed = np.array(counted.values()).astype(float)/len(counted.values())
+		return(rmse(expected,observed))
 
 # from: https://stackoverflow.com/questions/16330831/most-efficient-way-to-find-mode-in-numpy-array
 def mode(ndarray, axis=0):
