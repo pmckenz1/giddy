@@ -7,10 +7,12 @@ import re
 import subprocess
 import tempfile
 import sys
+from copy import deepcopy
 
 import toytree
 import numpy as np
 import pandas as pd
+
 
 # suppress the terrible h5 warning
 import warnings
@@ -80,8 +82,25 @@ class Coalseq:
             self._get_sequences()
 
         # write results to disk in workdir
+        # first the tree with its original names
         self.tree.write(
-            os.path.join(self.workdir, self.name + ".newick"))
+            os.path.join(self.workdir, self.name + ".tree.newick"))
+
+        # now with tip labels replaced
+        nodedict = self.tree.get_node_dict()
+        ivd = {v: k for k, v in nodedict.items()}
+        tmptree = deepcopy(self.tree)
+        copynodedict = tmptree.get_node_dict()
+        tiplabs = tmptree.get_tip_labels()
+        for leaf in tmptree.treenode.get_leaves():
+            leaf.name = str(ivd[leaf.name]+1)
+        tmptree.write(
+            os.path.join(self.workdir, self.name + ".tree_ids.newick"))
+
+        # now write topology:
+        tmptree.write(
+            os.path.join(self.workdir, self.name + ".topology.newick"),fmt=9)
+
         self.clade_table.to_csv(
             os.path.join(self.workdir, self.name + ".clade_table.csv"))
         self.tree_table.to_csv(

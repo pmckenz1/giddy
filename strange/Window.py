@@ -23,355 +23,393 @@ with warnings.catch_warnings():
 
 
 class SlidingWindow:
-    """
-    Perform tree inference on sliding windows over a phylip file and apply
-    fuctions for comparing inferred trees to the true genealogies. Data 
-    loaded in from the results of a Coalseq class object.   
-    """
-    def __init__(self, name, workdir, ipyclient=None):
-        # setup and check path to data files
-        self.name = name
-        self.workdir = os.path.realpath(os.path.expanduser(workdir))
-        assert os.path.exists(os.path.join(self.workdir, name + ".newick")), (
-            "Results files not found in: {}/{}.*".
-            format(self.workdir, self.name))
+	"""
+	Perform tree inference on sliding windows over a phylip file and apply
+	fuctions for comparing inferred trees to the true genealogies. Data 
+	loaded in from the results of a Coalseq class object.   
+	"""
+	def __init__(self, name, workdir, ipyclient=None):
+	    # setup and check path to data files
+	    self.name = name
+	    self.workdir = os.path.realpath(os.path.expanduser(workdir))
+	    assert os.path.exists(os.path.join(self.workdir, name + ".hdf5")), (
+	        "Results files not found in: {}/{}.*".
+	        format(self.workdir, self.name))
 
-        # connect to parallel client
-        self.ipyclient = ipyclient
+	    # connect to parallel client
+	    self.ipyclient = ipyclient
 
-        # find raxml binary relative to this file
-        strange_path = os.path.dirname(os.path.dirname(__file__))
-        bins_path = os.path.join(strange_path, "bins")
-        platform = ("linux" if "linux" in sys.platform else "macos")
-        self.raxml_binary = os.path.realpath(os.path.join(
-            bins_path,
-            'raxml-ng_v0.7.0_{}_x86_64'.format(platform)
-        ))
-        self.mb_binary = os.path.realpath(os.path.join(
-            bins_path,
-            'mb'
-        ))
+	    # find raxml binary relative to this file
+	    strange_path = os.path.dirname(os.path.dirname(__file__))
+	    bins_path = os.path.join(strange_path, "bins")
+	    platform = ("linux" if "linux" in sys.platform else "macos")
+	    self.raxml_binary = os.path.realpath(os.path.join(
+	        bins_path,
+	        'raxml-ng_v0.7.0_{}_x86_64'.format(platform)
+	    ))
+	    self.mb_binary = os.path.realpath(os.path.join(
+	        bins_path,
+	        'mb'
+	    ))
+	    self.coal_binary = os.path.realpath(os.path.join(
+	        bins_path,
+	        'hybrid-coal-{}'.format(platform)
+	    ))
 
-        # load Coalseq results from paths
-        self.tree = toytree.tree(os.path.join(self.workdir, name + ".newick"))
-        self.database = os.path.join(self.workdir, name + ".hdf5")
-        self.clade_table = pd.read_csv(
-            os.path.join(self.workdir, name + ".clade_table.csv"), index_col=0)
-        self.tree_table = pd.read_csv(
-            os.path.join(self.workdir, name + ".tree_table.csv"), index_col=0)
+	    # load Coalseq results from paths
+	    self.tree = toytree.tree(os.path.join(self.workdir, name + ".tree_ids.newick"))
+	    self.database = os.path.join(self.workdir, name + ".hdf5")
+	    self.clade_table = pd.read_csv(
+	        os.path.join(self.workdir, name + ".clade_table.csv"), index_col=0)
+	    self.tree_table = pd.read_csv(
+	        os.path.join(self.workdir, name + ".tree_table.csv"), index_col=0)
 
-        # new attrs to fill
-        self.raxml_table = pd.DataFrame({})
-        self.mb_database = None
-        self.mb_database_mstrees = None
-        self.snames = None
-        self.seqarr = None
-        
-        # run functions
-        self.parse_seqnames()
-        
-        
-    def parse_seqnames(self):
-        "read in seqarray as an ndarray"
-        with h5py.File(self.database, 'r') as io5:           
-            self.snames = io5.attrs["names"]
-    
-
-    def run_raxml_sliding_windows(self, window_size, slide_interval):
-        """
-        Write temp phy files, infer raxml trees, store in table, cleanup.
-        Pull chunks of sequence from seqarray in windows defined by tree_table
-        format as phylip and pass to raxml subprocess.
-        """
-        # open h5 view to file
-        with h5py.File(self.database, 'r') as io5:
-            dims = io5["seqarr"].shape
-
-        # how many windows in chromosome? 
-        nwindows = int((dims[1] - window_size) / slide_interval)
-        assert nwindows, "No windows in data"
-
-        # get all intervals in a generator
-        starts = range(0, dims[1] - window_size, slide_interval)
-        stops = range(window_size, dims[1], slide_interval)
-        intervals = zip(starts, stops)
-
-        # setup table for results
-        self.raxml_table["start"] = starts
-        self.raxml_table["stop"] = stops
-        self.raxml_table["nsnps"] = 0
-        self.raxml_table["tree"] = None
-
-        # parallelize tree inference
-        if self.ipyclient:
-            time0 = time.time()
-            lbview = self.ipyclient.load_balanced_view()
-
-            # infer trees by pulling in sequence from hdf5 on remote engines
-            rasyncs = {}
-            for idx, (start, stop) in enumerate(intervals):
-                args = (self.raxml_binary, self.database, start, stop)
-                rasyncs[idx] = lbview.apply(run_raxml, *args)
-
-            # track progress and collect results.
-            done = 0
-            while 1:
-                finished = [i for i in rasyncs if rasyncs[i].ready()]
-                for idx in finished:
-                    if rasyncs[idx].successful():
-                        nsnps, tree = rasyncs[idx].get()
-                        self.raxml_table.loc[idx, "nsnps"] = nsnps
-                        self.raxml_table.loc[idx, "tree"] = tree
-                        del rasyncs[idx]
-                        done += 1
-                    else:
-                        raise Exception(rasyncs[idx].get())
-                # progress
-                progressbar(done, nwindows, time0, "inferring raxml trees")
-                time.sleep(0.5)
-                if not rasyncs:
-                    break
-
-        # non-parallel code
-        else:
-            pass
-
-        # save raxml_table to disk
-        self.raxml_table.to_csv(
-            os.path.join(self.workdir, self.name + ".raxml_table"))
+	    # new attrs to fill
+	    self.raxml_table = pd.DataFrame({})
+	    self.mb_database = None
+	    self.mb_database_mstrees = None
+	    self.snames = None
+	    self.seqarr = None
+	    
+	    # run functions
+	    self.parse_seqnames()
+	    
+	    
+	def parse_seqnames(self):
+	    "read in seqarray as an ndarray"
+	    with h5py.File(self.database, 'r') as io5:           
+	        self.snames = io5.attrs["names"]
 
 
+	def run_raxml_sliding_windows(self, window_size, slide_interval):
+	    """
+	    Write temp phy files, infer raxml trees, store in table, cleanup.
+	    Pull chunks of sequence from seqarray in windows defined by tree_table
+	    format as phylip and pass to raxml subprocess.
+	    """
+	    # open h5 view to file
+	    with h5py.File(self.database, 'r') as io5:
+	        dims = io5["seqarr"].shape
 
-    def run_mb_sliding_windows(self, window_size, slide_interval,ipyclient=None):
-        """
-        Write temp nexus files, infer mb trees, store in hdf5, cleanup.
-        Pull chunks of sequence from seqarray in windows defined by tree_table
-        format as nexus and pass to mb subprocess.
-        """
-        # open h5 view to file
-        with h5py.File(self.database, 'r') as io5:
-            dims = io5["seqarr"].shape
+	    # how many windows in chromosome? 
+	    nwindows = int((dims[1] - window_size) / slide_interval)
+	    assert nwindows, "No windows in data"
 
-        # how many windows in chromosome? 
-        nwindows = int((dims[1]) / slide_interval)
-        assert nwindows, "No windows in data"
+	    # get all intervals in a generator
+	    starts = range(0, dims[1] - window_size, slide_interval)
+	    stops = range(window_size, dims[1], slide_interval)
+	    intervals = zip(starts, stops)
 
-        # get all intervals in a generator
-        starts = np.array(range(0, dims[1], slide_interval))
-        stops = starts + window_size
-        if stops[-1] > dims[1]:
-            stops[-1] = dims[1]
-        intervals = zip(starts, stops)
+	    # setup table for results
+	    self.raxml_table["start"] = starts
+	    self.raxml_table["stop"] = stops
+	    self.raxml_table["nsnps"] = 0
+	    self.raxml_table["tree"] = None
 
-        # start a hdf5 file for holding sliding window results
-        self.mb_database = self.workdir + '/' + self.name + '_mb.hdf5'
-        mbdb = h5py.File(self.mb_database)
+	    # parallelize tree inference
+	    if self.ipyclient:
+	        time0 = time.time()
+	        lbview = self.ipyclient.load_balanced_view()
 
-        mbdb.create_dataset('_intervals', data=np.array(intervals))
+	        # infer trees by pulling in sequence from hdf5 on remote engines
+	        rasyncs = {}
+	        for idx, (start, stop) in enumerate(intervals):
+	            args = (self.raxml_binary, self.database, start, stop)
+	            rasyncs[idx] = lbview.apply(run_raxml, *args)
 
-        # start a tempdir
-        tempfile.gettempdir()
+	        # track progress and collect results.
+	        done = 0
+	        while 1:
+	            finished = [i for i in rasyncs if rasyncs[i].ready()]
+	            for idx in finished:
+	                if rasyncs[idx].successful():
+	                    nsnps, tree = rasyncs[idx].get()
+	                    self.raxml_table.loc[idx, "nsnps"] = nsnps
+	                    self.raxml_table.loc[idx, "tree"] = tree
+	                    del rasyncs[idx]
+	                    done += 1
+	                else:
+	                    raise Exception(rasyncs[idx].get())
+	            # progress
+	            progressbar(done, nwindows, time0, "inferring raxml trees")
+	            time.sleep(0.5)
+	            if not rasyncs:
+	                break
 
-        # parallelize tree inference
-        if ipyclient:
-            self.ipyclient = ipyclient
-        if self.ipyclient:
-            time0 = time.time()
-            lbview = self.ipyclient.load_balanced_view()
+	    # non-parallel code
+	    else:
+	        pass
 
-            # infer trees by pulling in sequence from hdf5 on remote engines
-            rasyncs = {}
-            for idx, (start, stop) in enumerate(intervals):
-                args = (self.mb_binary, self.database, start, stop)
-                rasyncs[idx] = lbview.apply(run_mb, *args)
-
-            # track progress and collect results.
-            done = 0
-            while 1:
-                finished = [i for i in rasyncs if rasyncs[i].ready()]
-                for idx in finished:
-                    if rasyncs[idx].successful():
-                        arr = rasyncs[idx].get()
-                        mbdb.create_dataset(str(idx), data=arr)
-                        del rasyncs[idx]
-                        done += 1
-                    else:
-                        raise Exception(rasyncs[idx].get())
-                # progress
-                progressbar(done, nwindows, time0, "inferring mb trees")
-                time.sleep(0.5)
-                if not rasyncs:
-                    break
-
-        # non-parallel code
-        else:
-            print("no engines started, shutting down...")
-            pass
+	    # save raxml_table to disk
+	    self.raxml_table.to_csv(
+	        os.path.join(self.workdir, self.name + ".raxml_table"))
 
 
-        nummbtrees = len(mbdb.keys())-1
-        fullset = set
-        for i in range(nummbtrees):
-            fullset = fullset.union(set(mbdb[str(i)][0]))
-        df = pd.DataFrame(list(enumerate(fullset)),columns=['idx','newick'])
-        df.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_topokey.csv')
+	def run_mb_sliding_windows(self, window_size, slide_interval,ipyclient=None):
+	    """
+	    Write temp nexus files, infer mb trees, store in hdf5, cleanup.
+	    Pull chunks of sequence from seqarray in windows defined by tree_table
+	    format as nexus and pass to mb subprocess.
+	    """
+	    # open h5 view to file
+	    with h5py.File(self.database, 'r') as io5:
+	        dims = io5["seqarr"].shape
 
-        print('\nconsolidating...')
+	    # how many windows in chromosome? 
+	    nwindows = int((dims[1]) / slide_interval)
+	    assert nwindows, "No windows in data"
 
-        num_mb_gens = 4000
+	    # get all intervals in a generator
+	    starts = np.array(range(0, dims[1], slide_interval))
+	    stops = starts + window_size
+	    if stops[-1] > dims[1]:
+	        stops[-1] = dims[1]
+	    intervals = zip(starts, stops)
 
-        gtarr = np.zeros((num_mb_gens,nummbtrees),dtype=np.int32)
+	    # start a hdf5 file for holding sliding window results
+	    self.mb_database = self.workdir + '/' + self.name + '_mb.hdf5'
+	    mbdb = h5py.File(self.mb_database)
 
-        for column_idx in range(nummbtrees):
-            topos = np.array(list(mbdb[str(column_idx)]))[0]
-            topo_arr = np.zeros((topos.shape),dtype=np.int)
-            for topoidx in range(len(topos)):
-                topo_arr[topoidx] = np.argmax(df['newick'] == topos[topoidx])
+	    mbdb.create_dataset('_intervals', data=np.array(intervals))
 
-            probs = (np.array(list(mbdb[str(column_idx)]))[1]).astype(float)
-            probsum = np.sum(probs)
-            for probidx in range(len(probs)):
-                probs[probidx] = probs[probidx]/probsum
-            probs = (probs*num_mb_gens).astype(int)
-            probs[0:(num_mb_gens-np.sum(probs))] = probs[0:(num_mb_gens-np.sum(probs))] + 1
+	    # start a tempdir
+	    tempfile.gettempdir()
 
-            col = np.zeros((num_mb_gens),dtype=np.int64)
-            counter = 0
-            for topoidx in range(len(topo_arr)):
-                col[counter:(counter+probs[topoidx])] = np.repeat(topo_arr[topoidx],probs[topoidx])
-                counter += probs[topoidx]
-            
-            gtarr[:,column_idx] = col
-        pd.DataFrame(gtarr).to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mcmc.csv')
+	    # parallelize tree inference
+	    if ipyclient:
+	        self.ipyclient = ipyclient
+	    if self.ipyclient:
+	        time0 = time.time()
+	        lbview = self.ipyclient.load_balanced_view()
 
-        #tot_list = []
-        #for _ in range(nummbtrees):
-        #    trees = mbdb[str(_)][0]
-        #    probs = mbdb[str(_)][1]
-        #    for loop in range(len(trees)):
-        #        tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
-        #totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+	        # infer trees by pulling in sequence from hdf5 on remote engines
+	        rasyncs = {}
+	        for idx, (start, stop) in enumerate(intervals):
+	            args = (self.mb_binary, self.database, start, stop)
+	            rasyncs[idx] = lbview.apply(run_mb, *args)
 
-        #totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_post.csv')
+	        # track progress and collect results.
+	        done = 0
+	        while 1:
+	            finished = [i for i in rasyncs if rasyncs[i].ready()]
+	            for idx in finished:
+	                if rasyncs[idx].successful():
+	                    arr = rasyncs[idx].get()
+	                    mbdb.create_dataset(str(idx), data=arr)
+	                    del rasyncs[idx]
+	                    done += 1
+	                else:
+	                    raise Exception(rasyncs[idx].get())
+	            # progress
+	            progressbar(done, nwindows, time0, "inferring mb trees")
+	            time.sleep(0.5)
+	            if not rasyncs:
+	                break
 
-        mbdb.close()
-
-
-    def run_mb_mstrees(self,ipyclient=None):
-        """
-        Write temp nexus files, infer mb trees, store in hdf5, cleanup.
-        Pull chunks of sequence from seqarray in windows defined by tree_table
-        format as nexus and pass to mb subprocess.
-        """
-        # open h5 view to file
-        with h5py.File(self.database, 'r') as io5:
-            dims = io5["seqarr"].shape
-
-        # how many windows in chromosome? 
-        nwindows = np.sum(self.tree_table.length != 0)
-        assert nwindows, "No windows in data"
-
-        starts = self.tree_table.start
-        stops = self.tree_table.end
-
-        filterarr = np.array(((starts-stops) != 0))
-
-        # get all intervals in a generator
-        intervals = zip(self.tree_table.start[filterarr], 
-            self.tree_table.end[filterarr])
-
-        # start a hdf5 file for holding sliding window results
-        self.mb_database_mstrees = self.workdir + '/' + self.name + '_mb_mstrees.hdf5'
-        mbdb = h5py.File(self.mb_database_mstrees)
-
-        mbdb.create_dataset('_intervals', data=np.array(intervals))
-
-        # start a tempdir
-        tempfile.gettempdir()
-
-        # parallelize tree inference
-        if ipyclient:
-            self.ipyclient = ipyclient
-        if self.ipyclient:
-            time0 = time.time()
-            lbview = self.ipyclient.load_balanced_view()
-
-            # infer trees by pulling in sequence from hdf5 on remote engines
-            rasyncs = {}
-            for idx, (start, stop) in enumerate(intervals):
-                args = (self.mb_binary, self.database, start, stop)
-                rasyncs[idx] = lbview.apply(run_mb, *args)
-
-            # track progress and collect results.
-            done = 0
-            while 1:
-                finished = [i for i in rasyncs if rasyncs[i].ready()]
-                for idx in finished:
-                    if rasyncs[idx].successful():
-                        arr = rasyncs[idx].get()
-                        mbdb.create_dataset(str(idx), data=arr)
-                        del rasyncs[idx]
-                        done += 1
-                    else:
-                        raise Exception(rasyncs[idx].get())
-                # progress
-                progressbar(done, nwindows, time0, "inferring mb trees on mstrees")
-                time.sleep(0.5)
-                if not rasyncs:
-                    break
-
-        # non-parallel code
-        else:
-            print("no engines started, shutting down...")
-            pass
+	    # non-parallel code
+	    else:
+	        print("no engines started, shutting down...")
+	        pass
 
 
-        nummbtrees = len(mbdb.keys())-1
-        fullset = set
-        for i in range(nummbtrees):
-            fullset = fullset.union(set(mbdb[str(i)][0]))
-        df = pd.DataFrame(list(enumerate(fullset)),columns=['idx','newick'])
-        df.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_topokey.csv')
+	    nummbtrees = len(mbdb.keys())-1
+	    fullset = set
+	    for i in range(nummbtrees):
+	        fullset = fullset.union(set(mbdb[str(i)][0]))
+	    df = pd.DataFrame(list(enumerate(fullset)),columns=['idx','newick'])
+	    df.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_topokey.csv')
 
-        print('\nconsolidating...')
+	    print('\nconsolidating...')
 
-        num_mb_gens = 4000
+	    num_mb_gens = 4000
 
-        gtarr = np.zeros((num_mb_gens,nummbtrees),dtype=np.int32)
+	    gtarr = np.zeros((num_mb_gens,nummbtrees),dtype=np.int32)
 
-        for column_idx in range(nummbtrees):
-            topos = np.array(list(mbdb[str(column_idx)]))[0]
-            topo_arr = np.zeros((topos.shape),dtype=np.int)
-            for topoidx in range(len(topos)):
-                topo_arr[topoidx] = np.argmax(df['newick'] == topos[topoidx])
+	    for column_idx in range(nummbtrees):
+	        topos = np.array(list(mbdb[str(column_idx)]))[0]
+	        topo_arr = np.zeros((topos.shape),dtype=np.int)
+	        for topoidx in range(len(topos)):
+	            topo_arr[topoidx] = np.argmax(df['newick'] == topos[topoidx])
 
-            probs = (np.array(list(mbdb[str(column_idx)]))[1]).astype(float)
-            probsum = np.sum(probs)
-            for probidx in range(len(probs)):
-                probs[probidx] = probs[probidx]/probsum
-            probs = (probs*num_mb_gens).astype(int)
-            probs[0:(num_mb_gens-np.sum(probs))] = probs[0:(num_mb_gens-np.sum(probs))] + 1
+	        probs = (np.array(list(mbdb[str(column_idx)]))[1]).astype(float)
+	        probsum = np.sum(probs)
+	        for probidx in range(len(probs)):
+	            probs[probidx] = probs[probidx]/probsum
+	        probs = (probs*num_mb_gens).astype(int)
+	        probs[0:(num_mb_gens-np.sum(probs))] = probs[0:(num_mb_gens-np.sum(probs))] + 1
 
-            col = np.zeros((num_mb_gens),dtype=np.int64)
-            counter = 0
-            for topoidx in range(len(topo_arr)):
-                col[counter:(counter+probs[topoidx])] = np.repeat(topo_arr[topoidx],probs[topoidx])
-                counter += probs[topoidx]
-            
-            gtarr[:,column_idx] = col
-        pd.DataFrame(gtarr).to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_mcmc.csv')
+	        col = np.zeros((num_mb_gens),dtype=np.int64)
+	        counter = 0
+	        for topoidx in range(len(topo_arr)):
+	            col[counter:(counter+probs[topoidx])] = np.repeat(topo_arr[topoidx],probs[topoidx])
+	            counter += probs[topoidx]
+	        
+	        gtarr[:,column_idx] = col
+	    pd.DataFrame(gtarr).to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mcmc.csv')
 
-        #tot_list = []
-        #for _ in range(nummbtrees):
-        #    trees = mbdb[str(_)][0]
-        #    probs = mbdb[str(_)][1]
-        #    for loop in range(len(trees)):
-        #        tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
-        #totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+	    #tot_list = []
+	    #for _ in range(nummbtrees):
+	    #    trees = mbdb[str(_)][0]
+	    #    probs = mbdb[str(_)][1]
+	    #    for loop in range(len(trees)):
+	    #        tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
+	    #totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
 
-        #totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_post.csv')
+	    #totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_post.csv')
+	    print('done.')
+	    mbdb.close()
 
-        mbdb.close()
+
+	def run_mb_mstrees(self,ipyclient=None):
+	    """
+	    Write temp nexus files, infer mb trees, store in hdf5, cleanup.
+	    Pull chunks of sequence from seqarray in windows defined by tree_table
+	    format as nexus and pass to mb subprocess.
+	    """
+	    # open h5 view to file
+	    with h5py.File(self.database, 'r') as io5:
+	        dims = io5["seqarr"].shape
+
+	    # how many windows in chromosome? 
+	    nwindows = np.sum(self.tree_table.length != 0)
+	    assert nwindows, "No windows in data"
+
+	    starts = self.tree_table.start
+	    stops = self.tree_table.end
+
+	    filterarr = np.array(((starts-stops) != 0))
+
+	    # get all intervals in a generator
+	    intervals = zip(self.tree_table.start[filterarr], 
+	        self.tree_table.end[filterarr])
+
+	    # start a hdf5 file for holding sliding window results
+	    self.mb_database_mstrees = self.workdir + '/' + self.name + '_mb_mstrees.hdf5'
+	    mbdb = h5py.File(self.mb_database_mstrees)
+
+	    mbdb.create_dataset('_intervals', data=np.array(intervals))
+
+	    # start a tempdir
+	    tempfile.gettempdir()
+
+	    # parallelize tree inference
+	    if ipyclient:
+	        self.ipyclient = ipyclient
+	    if self.ipyclient:
+	        time0 = time.time()
+	        lbview = self.ipyclient.load_balanced_view()
+
+	        # infer trees by pulling in sequence from hdf5 on remote engines
+	        rasyncs = {}
+	        for idx, (start, stop) in enumerate(intervals):
+	            args = (self.mb_binary, self.database, start, stop)
+	            rasyncs[idx] = lbview.apply(run_mb, *args)
+
+	        # track progress and collect results.
+	        done = 0
+	        while 1:
+	            finished = [i for i in rasyncs if rasyncs[i].ready()]
+	            for idx in finished:
+	                if rasyncs[idx].successful():
+	                    arr = rasyncs[idx].get()
+	                    mbdb.create_dataset(str(idx), data=arr)
+	                    del rasyncs[idx]
+	                    done += 1
+	                else:
+	                    raise Exception(rasyncs[idx].get())
+	            # progress
+	            progressbar(done, nwindows, time0, "inferring mb trees on mstrees")
+	            time.sleep(0.5)
+	            if not rasyncs:
+	                break
+
+	    # non-parallel code
+	    else:
+	        print("no engines started, shutting down...")
+	        pass
+
+
+	    nummbtrees = len(mbdb.keys())-1
+	    fullset = set
+	    for i in range(nummbtrees):
+	        fullset = fullset.union(set(mbdb[str(i)][0]))
+	    df = pd.DataFrame(list(enumerate(fullset)),columns=['idx','newick'])
+	    df.to_csv(
+	            os.path.join(self.workdir, self.name + "_mb_mstrees_topokey.csv"))
+	    print('\nconsolidating...')
+
+	    num_mb_gens = 4000
+
+	    gtarr = np.zeros((num_mb_gens,nummbtrees),dtype=np.int32)
+
+	    for column_idx in range(nummbtrees):
+	        topos = np.array(list(mbdb[str(column_idx)]))[0]
+	        topo_arr = np.zeros((topos.shape),dtype=np.int)
+	        for topoidx in range(len(topos)):
+	            topo_arr[topoidx] = np.argmax(df['newick'] == topos[topoidx])
+
+	        probs = (np.array(list(mbdb[str(column_idx)]))[1]).astype(float)
+	        probsum = np.sum(probs)
+	        for probidx in range(len(probs)):
+	            probs[probidx] = probs[probidx]/probsum
+	        probs = (probs*num_mb_gens).astype(int)
+	        probs[0:(num_mb_gens-np.sum(probs))] = probs[0:(num_mb_gens-np.sum(probs))] + 1
+
+	        col = np.zeros((num_mb_gens),dtype=np.int64)
+	        counter = 0
+	        for topoidx in range(len(topo_arr)):
+	            col[counter:(counter+probs[topoidx])] = np.repeat(topo_arr[topoidx],probs[topoidx])
+	            counter += probs[topoidx]
+	        
+	        gtarr[:,column_idx] = col
+	    pd.DataFrame(gtarr).to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_mcmc.csv')
+
+	    #tot_list = []
+	    #for _ in range(nummbtrees):
+	    #    trees = mbdb[str(_)][0]
+	    #    probs = mbdb[str(_)][1]
+	    #    for loop in range(len(trees)):
+	    #        tot_list.append([_,np.argmax(df['newick'] == trees[loop]),np.float(probs[loop])])
+	    #totdf = pd.DataFrame(tot_list,columns=['idx','topo_idx','prob'])
+
+	    #totdf.to_csv(path_or_buf=self.workdir + '/' + self.name + '_mb_mstrees_post.csv')
+	    print('done.')
+	    mbdb.close()
+
+
+	def add_probs_topokey(self):
+		topokey = pd.read_csv(
+		            os.path.join(self.workdir, self.name + "_mb_mstrees_topokey.csv"),index_col=0)
+		gtnewicks = topokey['newick']
+
+		sptree=self.tree.newick
+		problist = np.zeros(len(gtnewicks))
+		time0 = time.time()
+		ngts = len(gtnewicks)
+		for i in range(ngts):
+		    # run mb on nexus file
+		    proc = subprocess.Popen([
+		        self.coal_binary,
+		        '-sp',
+		        sptree,
+		        '-gt',
+		        gtnewicks[i]
+		        ], 
+		        stderr=subprocess.PIPE,
+		        stdout=subprocess.PIPE,
+		    )
+
+		    statement = proc.stderr.read().strip()
+
+		    # check for errors
+		    out, _ = proc.communicate()
+		    if proc.returncode:
+		        raise Exception("hybrid-coal error: {}".format(out.decode()))
+		    
+		    problist[i] = np.float(statement.split(' = ')[1])
+		    progressbar(i+1, ngts, time0, "computing gene tree probabilities")
+		topokey.assign(probs=problist).to_csv(
+		            os.path.join(self.workdir, self.name + "_mb_mstrees_topokey.csv"))
 
 
 def run_mb(mb_binary, database, start, stop):
@@ -485,151 +523,104 @@ def progressbar(finished, total, start, message):
         end="")
     sys.stdout.flush()    
 
-
-class Window:
-    def __init__(self,
-        full_seq_path):
-        self.full_seq_path = full_seq_path
-
-
-    def _write_subseq(self, output_seq_path, startidx, endidx):
-        '''
-        full_seq_path: string path to the hdf5 file containing the full alignment
-        output_seq_path: path to the output file (ending in .fa). 
-        startidx: integer index of site for window start
-        endidx: integer index of site for window end
+@jit
+def replace(arr,
+            mixnum,
+            sd_normal):
+    # record column, row numbers for arr
+    numcols = arr.shape[1]
+    numrows = arr.shape[0]
+    
+    # use normal distribution to sample which other (or same) column to draw from, for each column
+    sc = np.array(list(range(numcols)) + np.random.normal(0,sd_normal,numcols).astype(int))
+    # reflect around upper bound
+    sc[sc >= numcols] = (numcols-1) + (numcols-1)-sc[sc >= numcols]
+    sc[sc < 0] = np.abs(sc[sc < 0])
+    
+    # make new big array to sample from (columns correspond to columns to draw from)
+    scarr = arr[sc]
+    
+    # make an array of the samples (ncols x mixnum) shape
+    choicearr = np.zeros((numcols,mixnum),dtype=np.int64)
+    for i in range(numcols):
+        choicearr[i] = np.random.choice(scarr[:,i],size=mixnum)
         
-        Takes a full simulated alignment and writes out a user-defined window within that alignment.
-        The outputs of this are .fa format and can be input to RAxML.
-        '''
-        seqs = h5py.File(self.full_seq_path)
-        with open(output_seq_path,'w') as f:
-            # make the header line telling how many taxa and how long the alignment is
-            f.write(" "+str(seqs['alignment'].shape[0])+" "+str(endidx-startidx))
-            f.write("\n")
-            # for each row of the array, save a taxa ID and then the full sequence.
-            for idx, seq in enumerate([''.join(i) for i in seqs['alignment'][:,startidx:endidx]]):
-                # make a line to ID the taxon:
-                f.write(str(idx+1) + ' '*(10-len(str(idx+1))))
-                f.write("\n")
-                #make a line for the sequence
-                f.write(seq)
-                f.write("\n")
+    # make an array of idxs to replace (for each original column) with the new samples
+    replace_idxs = np.random.randint(0,high=numrows,size=(choicearr.shape))
+    
+    # make the replacements
+    for i in range(numcols):
+        arr[:,i][replace_idxs[i]] = choicearr[i]
 
-
-    def produce_subseqs(self,
-                       window_size,
-                       slide_interval,
-                       directory_name):
-        '''
-        user defines window size, sliding distance, path to the full alignment, and a
-        directory in which to save the shortened sequences.
-        '''
-        # make a directory to save the sequence files
-        if not os.path.exists(directory_name):
-            os.mkdir(directory_name)
-            print("Directory '" + directory_name +  "' created.")
-        seqs = h5py.File(self.full_seq_path)
-        total_len = seqs['alignment'].shape[1]
-        seqs.close()
-        # what's the farthest start index for our window
-        startlimit = total_len-window_size
-
-        index_nums = []
-        index_starts = []
-        index_ends = []
-        
-        startidx = 0
-        num = 0
-        while startidx <= startlimit:
-            endidx = startidx + window_size
-            
-            # maintain an index for later reference
-            index_nums.append(num)
-            index_starts.append(startidx)
-            index_ends.append(endidx)
-            # write out a file for this loop's window
-            self._write_subseq(directory_name+'/'+str(num)+'_'+str(startidx)+'_'+str(endidx)+'.fa',
-                        startidx,
-                        endidx)
-            # then slide the window
-            startidx += slide_interval
-            num += 1
-        
-        # finish the process if there's a 'remainder'
-        if startidx < total_len:
-            
-            # add to the index list
-            index_nums.append(num)
-            index_starts.append(startlimit)
-            index_ends.append(total_len)
-            self._write_subseq(directory_name+'/'+str(num)+'_'+str(startlimit)+'_'+str(total_len)+'.fa',
-                    startlimit,
-                    total_len)
-        # write out the index file
-        indexfile = h5py.File(directory_name+'/_index.hdf5')
-        indexfile['nums'] = np.array(index_nums)
-        indexfile['starts'] = np.array(index_starts)
-        indexfile['ends'] = np.array(index_ends)
-
-
-    def run_raxml(self, directory_name):
-        '''
-        directory_name: existing directory that is already created/filled using `produce_subseqs`
-        runs raxml on each individual sequence in the directory produced with `produce_subseqs`
-        uses magic right now but better to use subprocess
-        '''
-        names = os.listdir(directory_name)
-        names = np.array(names)[np.array(names) != '_index.hdf5']
-        for name in names:
-            raxml = subprocess.Popen(['./raxml-ng','--msa', directory_name + '/' + name,'-model','GTR+G','-threads','2','--log','ERROR'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            raxml.communicate()
 
 class MBmcmc:
-    def __init__(self,
-        posterior_path):
-        self.mbcsv = pd.read_csv(posterior_path,index_col=0)
+	def __init__(self,
+	    posterior_path):
+		self.mbcsv = np.array(pd.read_csv(posterior_path,index_col=0))
 
-    @jit
-    def replace(self,
-                arr,
-                mixnum,
-                sd_normal):
-        # record column, row numbers for arr
-        numcols = arr.shape[1]
-        numrows = arr.shape[0]
-        
-        # use normal distribution to sample which other (or same) column to draw from, for each column
-        sc = np.array(list(range(numcols)) + np.random.normal(0,sd_normal,numcols).astype(int))
-        # reflect around upper bound
-        sc[sc >= numcols] = (numcols-1) + (numcols-1)-sc[sc >= numcols]
-        sc[sc < 0] = np.abs(sc[sc < 0])
-        
-        # make new big array to sample from (columns correspond to columns to draw from)
-        scarr = arr[sc]
-        
-        # make an array of the samples (ncols x mixnum) shape
-        choicearr = np.zeros((numcols,mixnum),dtype=np.int64)
-        for i in range(numcols):
-            choicearr[i] = np.random.choice(scarr[:,i],size=mixnum)
-            
-        # make an array of idxs to replace (for each original column) with the new samples
-        replace_idxs = np.random.randint(0,high=numrows,size=(choicearr.shape))
-        
-        # make the replacements
-        for i in range(numcols):
-            arr[:,i][replace_idxs[i]] = choicearr[i]
+	def update_x_times(self,
+	                   arr,
+	                   mixnum,
+	                   num_times,
+	                   sd_normal):
+	    for i in range(num_times):
+	        replace(arr,
+	                mixnum,
+	                sd_normal)
 
-    @jit
-    def update_x_times(self,
-                       arr,
-                       mixnum,
-                       num_times,
-                       sd_normal):
-        for i in range(num_times):
-            replace(arr,
-                    mixnum,
-                    sd_normal)
+# from: https://stackoverflow.com/questions/16330831/most-efficient-way-to-find-mode-in-numpy-array
+def mode(ndarray, axis=0):
+    # Check inputs
+    ndarray = np.asarray(ndarray)
+    ndim = ndarray.ndim
+    if ndarray.size == 1:
+        return (ndarray[0], 1)
+    elif ndarray.size == 0:
+        raise Exception('Cannot compute mode on empty array')
+    try:
+        axis = range(ndarray.ndim)[axis]
+    except:
+        raise Exception('Axis "{}" incompatible with the {}-dimension array'.format(axis, ndim))
+
+    # If array is 1-D and numpy version is > 1.9 numpy.unique will suffice
+    if all([ndim == 1,
+            int(np.__version__.split('.')[0]) >= 1,
+            int(np.__version__.split('.')[1]) >= 9]):
+        modals, counts = numpy.unique(ndarray, return_counts=True)
+        index = np.argmax(counts)
+        return modals[index], counts[index]
+
+    # Sort array
+    sort = np.sort(ndarray, axis=axis)
+    # Create array to transpose along the axis and get padding shape
+    transpose = np.roll(np.arange(ndim)[::-1], axis)
+    shape = list(sort.shape)
+    shape[axis] = 1
+    # Create a boolean array along strides of unique values
+    strides = np.concatenate([np.zeros(shape=shape, dtype='bool'),
+                                 np.diff(sort, axis=axis) == 0,
+                                 np.zeros(shape=shape, dtype='bool')],
+                                axis=axis).transpose(transpose).ravel()
+    # Count the stride lengths
+    counts = np.cumsum(strides)
+    counts[~strides] = np.concatenate([[0], np.diff(counts[~strides])])
+    counts[strides] = 0
+    # Get shape of padded counts and slice to return to the original shape
+    shape = np.array(sort.shape)
+    shape[axis] += 1
+    shape = shape[transpose]
+    slices = [slice(None)] * ndim
+    slices[axis] = slice(1, None)
+    # Reshape and compute final counts
+    counts = counts.reshape(shape).transpose(transpose)[tuple(slices)] + 1
+
+    # Find maximum counts and return modals/counts
+    slices = [slice(None, i) for i in sort.shape]
+    del slices[axis]
+    index = np.ogrid[slices]
+    index.insert(axis, np.argmax(counts, axis=axis))
+    return sort[tuple(index)], counts[tuple(index)]
+
 
 class MB_posts_csv:
     def __init__(self,
