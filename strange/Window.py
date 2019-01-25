@@ -536,21 +536,21 @@ def replace(arr,
     # reflect around upper bound
     sc[sc >= numcols] = (numcols-1) + (numcols-1)-sc[sc >= numcols]
     sc[sc < 0] = np.abs(sc[sc < 0])
-    
+
     # make new big array to sample from (columns correspond to columns to draw from)
     scarr = arr[:,sc]
     
     # make an array of the samples (ncols x mixnum) shape
-    choicearr = np.zeros((numcols,mixnum),dtype=np.int64)
-    for i in range(numcols):
-        choicearr[i] = np.random.choice(scarr[:,i],size=mixnum)
-        
+    choicearr = scarr[np.random.randint(0,10,(mixnum,scarr.shape[1])),np.arange(scarr.shape[1])].T
+    
     # make an array of idxs to replace (for each original column) with the new samples
     replace_idxs = np.random.randint(0,high=numrows,size=(choicearr.shape))
     
-    # make the replacements
-    for i in range(numcols):
-        arr[:,i][replace_idxs[i]] = choicearr[i]
+    idxarr = np.zeros((numcols,mixnum),dtype=np.int16)
+    for idx in np.arange(mixnum):
+        idxarr[:,idx] = np.arange(numcols)
+    
+    arr[replace_idxs,idxarr] = choicearr
 
 @jit
 def rmse(predictions, targets):
