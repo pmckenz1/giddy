@@ -526,31 +526,37 @@ def progressbar(finished, total, start, message):
 @jit
 def replace(arr,
             mixnum,
-            sd_normal):
-    # record column, row numbers for arr
-    numcols = arr.shape[1]
-    numrows = arr.shape[0]
-    
-    # use normal distribution to sample which other (or same) column to draw from, for each column
-    sc = np.array(list(range(numcols)) + np.random.normal(0,sd_normal,numcols).astype(int))
-    # reflect around upper bound
-    sc[sc >= numcols] = (numcols-1) + (numcols-1)-sc[sc >= numcols]
-    sc[sc < 0] = np.abs(sc[sc < 0])
+            sd_normal,
+            sc):
+	'''
+	TO DO: make the the sc array outside the function, pass that in.
 
-    # make new big array to sample from (columns correspond to columns to draw from)
-    scarr = arr[:,sc]
-    
-    # make an array of the samples (ncols x mixnum) shape
-    choicearr = scarr[np.random.randint(0,10,(mixnum,scarr.shape[1])),np.arange(scarr.shape[1])].T
-    
-    # make an array of idxs to replace (for each original column) with the new samples
-    replace_idxs = np.random.randint(0,high=numrows,size=(choicearr.shape))
-    
-    idxarr = np.zeros((numcols,mixnum),dtype=np.int16)
-    for idx in np.arange(mixnum):
-        idxarr[:,idx] = np.arange(numcols)
-    
-    arr[replace_idxs,idxarr] = choicearr
+	sc argument is just an empty array.
+	'''
+	# record column, row numbers for arr
+	numcols = arr.shape[1]
+	numrows = arr.shape[0]
+
+	# use normal distribution to sample which other (or same) column to draw from, for each column
+	sc = np.array(np.arange(numcols) + np.random.normal(0,sd_normal,numcols).astype(np.int32))
+	# reflect around upper bound
+	sc[sc >= numcols] = (numcols-1) + (numcols-1)-sc[sc >= numcols]
+	sc[sc < 0] = np.abs(sc[sc < 0])
+
+	# make new big array to sample from (columns correspond to columns to draw from)
+	scarr = arr[:,sc]
+
+	# make an array of the samples (ncols x mixnum) shape
+	choicearr = scarr[np.random.randint(0,10,(mixnum,scarr.shape[1])),np.arange(scarr.shape[1])].T
+
+	# make an array of idxs to replace (for each original column) with the new samples
+	replace_idxs = np.random.randint(0,high=numrows,size=(choicearr.shape))
+
+	idxarr = np.zeros((numcols,mixnum),dtype=np.int16)
+	for idx in np.arange(mixnum):
+	    idxarr[:,idx] = np.arange(numcols)
+
+	arr[replace_idxs,idxarr] = choicearr
 
 @jit
 def rmse(predictions, targets):
@@ -565,7 +571,7 @@ class MBmcmc:
 
 		self.mbcsv = np.array(pd.read_csv(os.path.join(self.workdir, 
 			name + "_mb_mstrees_mcmc.csv")
-			,index_col=0))
+			,index_col=0),dtype=np.int32)
 		self._mbcsv = deepcopy(self.mbcsv) # for updating
 		self.topokey = pd.read_csv(os.path.join(self.workdir, 
 			name + "_mb_mstrees_topokey.csv"),
@@ -578,6 +584,12 @@ class MBmcmc:
 		self.original_gts = mode(self.mbcsv)
 		self.currgts = mode(self.mbcsv)
 
+		self.zeros = np.zeros((self.mbcsv.shape),dtype = np.int32)
+
+		# make the database name, and 
+		self.db = os.path.join(self.workdir, 
+			name + "_mcmc_res.hdf5")
+
 	def update_x_times(self,
 	                   mixnum,
 	                   num_times,
@@ -585,29 +597,85 @@ class MBmcmc:
 	    for i in range(num_times):
 	        replace(self.mbcsv,
 	                mixnum,
-	                sd_normal)
+	                sd_normal,
+	                self.zeros)
 
 	def _update_and_score(self,
 		mixnum,
 		sd_normal,
-		p):
+		p,
+		sample_freq,
+		update_num,
+		record_arr):
 		replace(self._mbcsv,
 	                mixnum,
-	                sd_normal)
+	                sd_normal,
+	                self.zeros)
 		new_score, gts = score(self._mbcsv,self.topoprobs)
 		if new_score < self.currscore:
-			self.mbcsv = deepcopy(self._mbcsv)
+			self.mbcsv = self._mbcsv
 			self.currscore = new_score
-			self.gtlist.append(gts)
+			#self.gtlist.append(gts)
 			self.currgts = gts
+			if not (update_num+1)%sample_freq:
+				record_arr[np.int16(np.floor(update_num/sample_freq))] = self.mbcsv
 		elif np.random.binomial(1,p):
-			self.mbcsv = deepcopy(self._mbcsv)
+			self.mbcsv = self._mbcsv
 			self.currscore = new_score
-			self.gtlist.append(gts)
+			#self.gtlist.append(gts)
 			self.currgts = gts
+			if not (update_num+1)%sample_freq:
+				record_arr[np.int16(np.floor(update_num/sample_freq))] = self.mbcsv
 		else:
-			self._mbcsv = deepcopy(self.mbcsv)
-			self.gtlist.append(self.currgts)
+			self._mbcsv = self.mbcsv
+			#self.gtlist.append(self.currgts)
+			if not (update_num+1)%sample_freq:
+				record_arr[np.int16(np.floor(update_num/sample_freq))] = self.mbcsv
+
+	def run_mcmc(self,
+		numtimes=10000,
+		sample_freq=100,
+		batchsize=500,
+		p=.1,
+		mixnum=5,
+		sd_normal=2):
+
+		self.hdf5 = h5py.File(self.db,'a')
+		if 'mcmcarr' not in self.hdf5.keys():
+			self.hdf5.create_dataset('mcmcarr',
+				shape=(0,self.mbcsv.shape[0],self.mbcsv.shape[1]),
+				maxshape=(None,self.mbcsv.shape[0],self.mbcsv.shape[1]),
+				dtype=np.int32)
+
+		num_samps = np.int16(np.floor(numtimes/sample_freq))
+
+		set_lengths = np.hstack([np.repeat(batchsize*sample_freq,np.int16(np.floor(numtimes/batchsize/sample_freq))),
+			numtimes%(batchsize*sample_freq)])
+		if set_lengths[-1] == 0:
+			set_lengths = set_lengths[:-1]
+
+		# progress bar
+		time0 = time.time()
+		counter = 1
+
+		for set_size in set_lengths:
+			setarr = np.zeros((np.int16(np.floor(set_size/sample_freq)), 
+				self.mbcsv.shape[0], self.mbcsv.shape[1]))
+			for update_num in np.arange(set_size):
+				self._update_and_score(mixnum,
+					sd_normal,
+					p,
+					sample_freq,
+					update_num,
+					setarr)
+				counter += 1
+				progressbar(counter, numtimes, time0, "running mcmc")
+			self.hdf5['mcmcarr'].resize((self.hdf5['mcmcarr'].shape[0] + setarr.shape[0]),axis = 0)
+			self.hdf5['mcmcarr'][-setarr.shape[0]:] = setarr
+
+		self.hdf5.close()
+
+
 
 
 def score(arr,topoprobs):
@@ -617,12 +685,12 @@ def score(arr,topoprobs):
 	observed = np.array(counted.values()).astype(float)/len(counted.values())
 	return([rmse(expected,observed),treemode])
 
-@jit(nopython=True, parallel=True)
+@jit(nopython=True)
 def mode(arr):
-    outarr = np.zeros(arr.shape[1],dtype=np.int16)
-    for idx in range(arr.shape[1]):
-        outarr[idx] = np.bincount(arr[:,idx]).argmax()
-    return outarr
+    outarr = np.zeros((arr.shape[1]),dtype = np.int32)
+    for i in np.arange(arr.shape[1]):
+        outarr[i] = np.argmax(np.bincount(arr[:,i]))
+    return(outarr)
 
 
 
