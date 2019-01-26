@@ -6,8 +6,6 @@ import os
 import re
 import subprocess
 import tempfile
-import sys
-from copy import deepcopy
 
 import toytree
 import numpy as np
@@ -37,6 +35,7 @@ class Coalseq:
         recombination_rate=1e-8,
         get_sequences=True,
         random_seed=None,
+        **kwargs,
         ):
        
         # store param settings
@@ -53,15 +52,6 @@ class Coalseq:
         self.ntips = self.tree.ntips
         self.random_seed = random_seed
 
-        # find seq-gen binary
-        strange_path = os.path.dirname(os.path.dirname(__file__))
-        bins_path = os.path.join(strange_path, "bins")
-        platform = ("linux" if "linux" in sys.platform else "macos")
-        self.seqgen_binary = os.path.realpath(os.path.join(
-            bins_path,
-            'seq-gen-{}'.format(platform)
-        ))
-
         # output attributes:
         self.treeseq = None
         self.tree_table = None
@@ -74,44 +64,23 @@ class Coalseq:
         self.cladeslist = None
         self.cladesarr = None
 
-        # fill treeseq, tree_table, and seqarr which is written to .hdf5
-        self._simulate()
-        self._get_tree_table()
-        self._get_clade_table()
-        if get_sequences:
-            self._get_sequences()
+        # if debug in kwargs then don't run sim functions during init
+        if not kwargs.get("debug"):
 
-        # write results to disk in workdir
-        # first the tree with its original names
-        self.tree.write(
-            os.path.join(self.workdir, self.name + ".tree.newick"))
+            # fill treeseq, tree_table, and seqarr which is written to .hdf5
+            self._simulate_tree_sequence()
+            self._get_tree_table()
+            self._get_clade_table()
+            if get_sequences:
+                self._get_sequences()
 
-        # now with tip labels replaced
-        nodedict = self.tree.get_node_dict()
-        ivd = {v: k for k, v in nodedict.items()}
-        tmptree = deepcopy(self.tree)
-        copynodedict = tmptree.get_node_dict()
-        tiplabs = tmptree.get_tip_labels()
-        for leaf in tmptree.treenode.get_leaves():
-            leaf.name = str(ivd[leaf.name]+1)
-        tmptree.write(
-            os.path.join(self.workdir, self.name + ".tree_ids.newick"))
-
-        # now write topology:
-        tmptree.write(
-            os.path.join(self.workdir, self.name + ".topology.newick"),fmt=9)
-
-        self.clade_table.to_csv(
-            os.path.join(self.workdir, self.name + ".clade_table.csv"))
-        self.tree_table.to_csv(
-            os.path.join(self.workdir, self.name + ".tree_table.csv"))
-
-        # save a key to get original tip labels back
-        idlist = []
-        for idx, label in enumerate(self.tree.get_tip_labels()):
-            idlist.append([idx+1,label])
-        pd.DataFrame(idlist).to_csv(os.path.join(self.workdir, self.name + ".tip_id.csv"))
-
+            # write results to disk in workdir
+            self.tree.write(
+                os.path.join(self.workdir, self.name + ".newick"))
+            self.clade_table.to_csv(
+                os.path.join(self.workdir, self.name + ".clade_table.csv"))
+            self.tree_table.to_csv(
+                os.path.join(self.workdir, self.name + ".tree_table.csv"))
 
 
     def _get_demography(self):
@@ -149,7 +118,7 @@ class Coalseq:
         return population_configurations
 
 
-    def _simulate(self):
+    def _simulate_tree_sequence(self):
         "Call msprime to generate tree sequence."
         migmat = np.zeros((self.ntips, self.ntips), dtype=int).tolist()    
         sim = ms.simulate(
@@ -178,14 +147,11 @@ class Coalseq:
                 int(tree.get_time(tree.get_root())) for tree 
                 in self.treeseq.trees()], 
             "mstree": [tree.newick() for tree in self.treeseq.trees()], 
-            # "treematch": [
-            #     toytree.tree(tree.newick()).treenode.robinson_foulds(
-            #         self.tree, topology_only=True)[0] == 0 
-            #     for tree in self.treeseq.trees()], 
         })
+
         # drop intervals of length zero
-        # (keeping these for now, sorting out later)
-        # self.tree_table = self.tree_table[self.tree_table.length > 0]
+        self.tree_table = self.tree_table[self.tree_table.length > 0]
+        self.tree_table.reindex()
 
 
     def _get_clade_table(self):
@@ -221,16 +187,15 @@ class Coalseq:
 
         # TODO: submit jobs to run asynchronously in parallel
         for idx in self.tree_table.index:
-            if self.tree_table.length[idx]:
-                arr, nsnps = self._call_seqgen_on_mstree(idx)
+            arr, nsnps = self._call_seqgen_on_mstree(idx)
 
-                # append tree to the tree table
-                self.tree_table.loc[idx, 'nsnps'] = int(nsnps)
+            # append tree to the tree table
+            self.tree_table.loc[idx, 'nsnps'] = int(nsnps)
 
-                # fill sequences into the supermatrix
-                start = self.tree_table.start[idx]
-                end = self.tree_table.end[idx]
-                seqarr[:, start:end] = arr
+            # fill sequences into the supermatrix
+            start = self.tree_table.start[idx]
+            end = self.tree_table.end[idx]
+            seqarr[:, start:end] = arr
 
         # format names for writing to phylip file:
         names = sorted(self.tree.get_tip_labels())
@@ -259,7 +224,7 @@ class Coalseq:
 
         # write sequence data to a tempfile
         proc1 = subprocess.Popen([
-            self.seqgen_binary, 
+            "seqgen",
             "-m", "GTR", 
             "-l", str(self.tree_table.length[idx]), 
             "-s", str(self.mutation_rate),
@@ -288,57 +253,6 @@ class Coalseq:
         sarr = arr[order, :]
         nsnps = np.invert(np.all(arr == arr[0], axis=0)).sum()
         return sarr, nsnps
-
-
-    def get_clade_lengths_bp(self, cidx):
-        lengths = []
-        flen = 0
-        for idx in self.clade_table.index:
-            # extend fragment
-            if self.clade_table.loc[idx, cidx] == 1 and idx in self.tree_table.index:
-                flen += self.tree_table.loc[idx][1]
-            # terminate fragment
-            else:
-                if flen:
-                    lengths.append(flen)
-                    flen = 0
-        return np.array(lengths)
-
-
-    def _get_cladeslist(self):
-        cladeslist = []
-        for mstree in self.tree_table.mstree:
-            for i in get_clades(toytree.tree(mstree)).values():
-                if i not in cladeslist:
-                    cladeslist.append(i)
-        sortedlist = np.array(cladeslist)[np.argsort([len(i) for i in cladeslist])]
-        self.cladeslist = sortedlist
-
-
-    def make_cladesarr(self):
-        self._get_cladeslist()
-        cladesarr = np.zeros((len(self.tree_table.mstree),len(self.cladeslist)),dtype=np.int8)
-        for row in range(len(self.tree_table.mstree)):
-            idxs= np.hstack([np.where(np.equal(i,
-                              self.cladeslist)) for i in get_clades(toytree.tree(self.tree_table.mstree[row])).values()])[0]
-            cladesarr[row,idxs] = 1
-        self.cladesarr = cladesarr
-
-    def query_clades(self,clades):
-        '''
-        clades is a list of sets of taxa. 
-
-        For each row of cladesarr, we're interested in 
-        whether all of our queried are present (i.e. "does this topology exist")
-
-        returns an boolean array of len = number of mstrees where each index corresponds
-        to whether that mstree contains all clades queried.
-        '''
-        all_clades_present = np.zeros((len(self.cladesarr)),dtype=np.bool)
-        presentidxs = set(np.hstack([np.where(np.equal(i,self.cladeslist)) for i in clades])[0])
-        for idx,i in enumerate(self.cladesarr):
-            all_clades_present[idx] = presentidxs.issubset(set(np.where(i)[0]))
-        return(all_clades_present)
 
 
 def get_clades(ttree):
