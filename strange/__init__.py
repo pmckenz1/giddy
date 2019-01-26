@@ -2,5 +2,8 @@
 
 __version__ = "0.2.1-dev"
 __author__ = "Patrick McKenzie"
+
 from .Coalseq import Coalseq
-from .Window import SlidingWindow, MBmcmc
+from .Window import SlidingWindow
+from .MCMC import *
+# from .Window import MBmcmc

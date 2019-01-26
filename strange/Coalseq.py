@@ -35,7 +35,7 @@ class Coalseq:
         length=10000,
         mutation_rate=1e-8,
         recombination_rate=1e-8,
-        get_sequences = True,
+        get_sequences=True,
         random_seed=None,
         ):
        
@@ -341,147 +341,6 @@ class Coalseq:
         return(all_clades_present)
 
 
-class Deprecated:
-    def __init__(self):
-        pass
-
-
-    def write_trees(self):
-        """
-        Write species tree and gene trees to a file. 
-        """
-        # write the species tree first
-        with open(self.dirname+'/species_tree.phy','w') as f:
-            f.write(self.tree.newick)
-
-        # make a folder for the msprime genetree files
-        dirname_genetrees = self.dirname+'/ms_genetrees'
-        if not os.path.exists(dirname_genetrees):
-            os.mkdir(dirname_genetrees)
-            print("Directory '" + dirname_genetrees +  "' created.")
-        
-        # make a list to hold onto the sequence lengths associated with each genetree
-        lengths = []
-        # start a counter for fun (I could enumerate instead...)
-        counter = 0
-        # for each genetree...
-        for tree in self.treeseq.trees():
-            # make a new numbered (these are ordered) file containing the newick tree
-            with open(dirname_genetrees+'/'+str(counter)+'.phy','w') as f:
-                f.write(tree.newick())
-            # hold onto the length for this tree
-            lengths.append(np.int64(tree.get_length()))
-            counter += 1
-        
-        # save our lengths list as an array to an hdf5 file... I should maybe do this inside the 
-        # loop rather than building up a list. 
-        lengthsfile = h5py.File(self.dirname+'/ms_genetree_lengths.hdf5','w')
-        lengthsfile['lengths'] = np.array(lengths)
-        lengthsfile.close()
-
-
-    def write_seqs(self):
-
-        # make a folder for the sequence files
-        dirname_seqs = self.dirname+'/seqs'
-        if not os.path.exists(dirname_seqs):
-            os.mkdir(dirname_seqs)
-            print("Directory '" + dirname_seqs + "' created.")
-        # open the file containing the sequence length for each msprime gene tree
-        lengthsfile = h5py.File(self.dirname+'/ms_genetree_lengths.hdf5','r')
-        
-        # for each msprime genetree file...
-        for i in os.listdir(self.dirname+'/ms_genetrees'):
-            # get the number associated with the genetree file (strip off the '.phy')
-            num = i[:-4]
-            # get the length of sequence associated with the genetree
-            length = str(lengthsfile['lengths'][np.int(num)])
-            # run seqgen on the genetree file, using the associated sequence length
-            seqgen = subprocess.Popen(['seq-gen', self.dirname +'/ms_genetrees/'+i,'-m','GTR','-l',length, '-s', str(self._mut)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # write out a .fa file with number matching the genetree file
-            tee = subprocess.Popen(['tee', dirname_seqs+'/'+ num + '.fa'], stdin=seqgen.stdout)
-            seqgen.stdout.close()
-            # run the command
-            tee.communicate()
-
-
-    def build_seqs(self, filename='final_seqs', hdf5=False):
-        seq_len = 0
-        for i in range(self.treeseq.num_trees):
-            if (os.stat(self.dirname+ '/seqs/' + str(i) + '.fa').st_size != 0):
-                with open(self.dirname+'/seqs/' + str(i) + '.fa','r') as f:
-                    # count up what the total sequence length will be -- just add across all files
-                    tst = f.read().split('\n')[0]
-                    try:
-                        seq_len += int(tst.split(' ')[2])
-                    except:
-                        print('there was an error')
-        # make a zeros array of the shape of our final alignment
-        seq_arr=np.zeros((self.ntips,seq_len),dtype=np.str)
-        counter = 0
-        # for each simulated sequence fragment...
-        for i in range(self.treeseq.num_trees):
-            # open the sequence file
-            if (os.stat(self.dirname+ '/seqs/' + str(i) + '.fa').st_size != 0):
-                with open(self.dirname+ '/seqs/' + str(i) + '.fa','r') as f:
-                    # open, split, and exclude the last element (which is extraneous)
-                    # then sort so that the species are ordered
-                    myseq = np.sort(f.read().split('\n')[:-1])
-                    # save the integer length of the sequence fragment from the top line
-                    lenseq = int(myseq[0].split(' ')[2])
-                    # now ditch the top line
-                    myseq = myseq[1:]
-                    # now add the fragment for each species to the proper place in the array
-                    for idx, indiv_seq in enumerate(myseq):
-                        seq_arr[idx][counter:(counter+lenseq)] = list(indiv_seq[10:])
-                    counter += lenseq
-        # now that we've filled our whole array, we can save it to a full fasta file:
-        if not hdf5:
-            with open(self.dirname+'/'+filename+'.fa','w') as f:
-                # make the header line telling how many taxa and how long the alignment is
-                f.write(" "+str(self.ntips)+" "+str(seq_len))
-                f.write("\n")
-                # for each row of the array, save a taxa ID and then the full sequence.
-                for idx, seq in enumerate(seq_arr):
-                    # make a line to ID the taxon:
-                    f.write(str(idx+1) + ' '*(10-len(str(idx+1))))
-                    f.write("\n")
-                    #make a line for the sequence
-                    f.write(seq)
-                    f.write("\n")
-        else:
-            db=h5py.File(self.dirname+'/'+filename+'.hdf5')
-            db['alignment'] = seq_arr
-        print("Written full alignment.")
-    
-
-    def write_clades(self):
-        '''
-        writes a new directory full of files that each correspond to a gene tree.
-        Each file contains a list of clades in that gene tree. 
-        '''
-        dirname_seqs = self.dirname + '/clades'
-        phys = np.array([self.dirname+'/ms_genetrees/' + str(i) + '.phy' 
-                         for i in xrange(self.treeseq.num_trees)])
-        if not os.path.exists(dirname_seqs):
-            os.mkdir(dirname_seqs)
-            print("Directory '" + dirname_seqs + "' created.")
-        for filenum in range(self.treeseq.num_trees):
-            with open(phys[filenum],'r+') as f:
-                newick = f.read()
-            tree = toytree.etemini.Tree(newick)
-            trav=tree.traverse()
-            mylist=[]
-            for i in trav:
-                mylist.append(i.get_leaf_names())
-            clades = [i for i in mylist if len(i) > 1 and len(i)<self.ntips]
-            with open(dirname_seqs+'/'+str(filenum)+'.txt','w') as f:
-                for item in clades:
-                    f.write('%s\n' % item)
-
-
-
-
 def get_clades(ttree):
     "Used internally by _get_clade_table()"
     clades = {}
@@ -490,4 +349,3 @@ def get_clades(ttree):
         if len(clade) > 1 and len(clade) < ttree.ntips:
             clades[node.idx] = clade
     return clades
-
