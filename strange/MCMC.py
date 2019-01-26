@@ -51,17 +51,93 @@ class MCMC:
             score = np.prod([self.treeliks[i] for i in mdarr])
 
             # calculate whether to accept new move
-            
+            if score < self.score:
+                self.arr = newarr
+                self.score = score
 
-            # write to disk
+                # write to disk if index is ...
+                pass
 
-
-            # 
 
 
     def get_gtree_likelihoods(self):
+        "fill self.treeliks with likelihoods of each tree in self.treedict"
         pass
 
+
+
+
+
+def modes_multi(arr, treedict, topn=4):
+    "deprecated... return MJ consensus of top N trees in each column"
+
+    # empty array of -1s
+    modes = np.zeros((topn, arr.shape[1]), dtype=np.uint32)
+    modes.fill(-1)
+
+    # fill with topn trees, if only <n tress in dist then -1 remains
+    for i in range(arr.shape[1]):
+        tops = np.unique(arr[:, i], return_counts=True)[1][:topn]
+        modes[:tops.size, i] = tops
+
+    # replace tree indices with the actual trees
+    txs = [[treedict.get(i) for i in modes[:, i]] for i in range(arr.shape[1])]
+
+    # get consensus trees
+    constres = [
+        toytree.mtree(i).get_consensus_tree().write(fmt=9) for i in txs
+    ]
+
+    # turn consensus trees back into indices (could make a new tree! ugh...)
+    return constres
+
+
+@njit
+def jmodes(arr):
+    "return top 1 tree in each column, muchhh faster than modes_multi()"
+    modes = np.zeros(arr.shape[1], dtype=np.uint32)
+    for i in range(arr.shape[1]):
+        modes[i] = int(np.bincount(arr[:, i]).argmax())
+    return modes
+
+
+@njit
+def jsample(arr, nsamp=5, decay=2):
+    "Resample nsamp indices in 2-d array using distance decay."
+    # get up/down position of cells to replace for each col
+    sampy1 = np.zeros((nsamp, arr.shape[1]), dtype=np.uint32)
+    for idx in range(arr.shape[1]):
+        sampy1[:, idx] = np.random.choice(arr.shape[0], nsamp, replace=False)
+
+    # get up/down position of cells to fill replacements   
+    sampy2 = np.zeros((nsamp, arr.shape[1]), dtype=np.uint32)
+    for idx in range(arr.shape[1]):
+        sampy2[:, idx] = np.random.choice(arr.shape[0], nsamp, replace=False)
+    
+    # get how far left or right to draw new sample from at each cell
+    xdiff = np.random.normal(0, 2, size=(nsamp, arr.shape[1])).astype(np.int8)
+
+    # turn those samples into x indices
+    sampx = np.zeros((nsamp, arr.shape[1]), dtype=np.int32)
+    for idx in range(nsamp):
+        sampx[idx] = np.arange(arr.shape[1]) + xdiff[idx]
+    
+    # do not allow wrapping around ends
+    for row in range(sampx.shape[0]):
+        for col in range(sampx.shape[1]):
+            if sampx[row, col] < 0:
+                sampx[row, col] = 0
+            if sampx[row, col] > arr.shape[1] - 1:
+                sampx[row, col] = arr.shape[1] - 1
+
+    # replace sampled values with new sampled values
+    for row in range(sampx.shape[0]):
+        for col in range(sampx.shape[1]):
+            xer = (sampx[row, col])
+            y1 = sampy1[row, col]
+            y2 = sampy2[row, col]
+            arr[y1, xer] = arr[y2, xer]
+    return arr
 
 
 
@@ -104,59 +180,6 @@ class MCMC:
 #         return(rmse(expected,observed))
 
 
-
-# # from: https://stackoverflow.com/questions/16330831/most-efficient-way-to-find-mode-in-numpy-array
-# def mode(ndarray, axis=0):
-#     # Check inputs
-#     ndarray = np.asarray(ndarray)
-#     ndim = ndarray.ndim
-#     if ndarray.size == 1:
-#         return (ndarray[0], 1)
-#     elif ndarray.size == 0:
-#         raise Exception('Cannot compute mode on empty array')
-#     try:
-#         axis = range(ndarray.ndim)[axis]
-#     except:
-#         raise Exception('Axis "{}" incompatible with the {}-dimension array'.format(axis, ndim))
-
-#     # If array is 1-D and numpy version is > 1.9 numpy.unique will suffice
-#     if all([ndim == 1,
-#             int(np.__version__.split('.')[0]) >= 1,
-#             int(np.__version__.split('.')[1]) >= 9]):
-#         modals, counts = numpy.unique(ndarray, return_counts=True)
-#         index = np.argmax(counts)
-#         return modals[index], counts[index]
-
-#     # Sort array
-#     sort = np.sort(ndarray, axis=axis)
-#     # Create array to transpose along the axis and get padding shape
-#     transpose = np.roll(np.arange(ndim)[::-1], axis)
-#     shape = list(sort.shape)
-#     shape[axis] = 1
-#     # Create a boolean array along strides of unique values
-#     strides = np.concatenate([np.zeros(shape=shape, dtype='bool'),
-#                                  np.diff(sort, axis=axis) == 0,
-#                                  np.zeros(shape=shape, dtype='bool')],
-#                                 axis=axis).transpose(transpose).ravel()
-#     # Count the stride lengths
-#     counts = np.cumsum(strides)
-#     counts[~strides] = np.concatenate([[0], np.diff(counts[~strides])])
-#     counts[strides] = 0
-#     # Get shape of padded counts and slice to return to the original shape
-#     shape = np.array(sort.shape)
-#     shape[axis] += 1
-#     shape = shape[transpose]
-#     slices = [slice(None)] * ndim
-#     slices[axis] = slice(1, None)
-#     # Reshape and compute final counts
-#     counts = counts.reshape(shape).transpose(transpose)[tuple(slices)] + 1
-
-#     # Find maximum counts and return modals/counts
-#     slices = [slice(None, i) for i in sort.shape]
-#     del slices[axis]
-#     index = np.ogrid[slices]
-#     index.insert(axis, np.argmax(counts, axis=axis))
-#     return sort[tuple(index)], counts[tuple(index)]
 
 
 # class MB_posts_csv:
@@ -301,75 +324,3 @@ class MCMC:
 #     probs = probs / np.sum(probs)
 #     return(np.random.choice(topos,p=probs,replace=True,size = size))
 
-
-
-def modes_multi(arr, treedict, topn=4):
-    "deprecated... return MJ consensus of top N trees in each column"
-
-    # empty array of -1s
-    modes = np.zeros((topn, arr.shape[1]), dtype=np.uint32)
-    modes.fill(-1)
-
-    # fill with topn trees, if only <n tress in dist then -1 remains
-    for i in range(arr.shape[1]):
-        tops = np.unique(arr[:, i], return_counts=True)[1][:topn]
-        modes[:tops.size, i] = tops
-
-    # replace tree indices with the actual trees
-    txs = [[treedict.get(i) for i in modes[:, i]] for i in range(arr.shape[1])]
-
-    # get consensus trees
-    constres = [
-        toytree.mtree(i).get_consensus_tree().write(fmt=9) for i in txs
-    ]
-
-    # turn consensus trees back into indices (could make a new tree! ugh...)
-    return modes   
-
-
-@njit
-def jmodes(arr):
-    "return top 1 tree in each column, muchhh faster than modes_multi()"
-    modes = np.zeros(arr.shape[1], dtype=np.uint32)
-    for i in range(arr.shape[1]):
-        modes[i] = int(np.bincount(arr[:, i]).argmax())
-    return modes
-
-
-@njit
-def jsample(arr, nsamp=5, decay=2):
-    "Resample nsamp indices in 2-d array using distance decay."
-    # get up/down position of cells to replace for each col
-    sampy1 = np.zeros((nsamp, arr.shape[1]), dtype=np.uint32)
-    for idx in range(arr.shape[1]):
-        sampy1[:, idx] = np.random.choice(arr.shape[0], nsamp, replace=False)
-
-    # get up/down position of cells to fill replacements   
-    sampy2 = np.zeros((nsamp, arr.shape[1]), dtype=np.uint32)
-    for idx in range(arr.shape[1]):
-        sampy2[:, idx] = np.random.choice(arr.shape[0], nsamp, replace=False)
-    
-    # get how far left or right to draw new sample from at each cell
-    xdiff = np.random.normal(0, 2, size=(nsamp, arr.shape[1])).astype(np.int8)
-
-    # turn those samples into x indices
-    sampx = np.zeros((nsamp, arr.shape[1]), dtype=np.int32)
-    for idx in range(nsamp):
-        sampx[idx] = np.arange(arr.shape[1]) + xdiff[idx]
-    
-    # do not allow wrapping around ends
-    for row in range(sampx.shape[0]):
-        for col in range(sampx.shape[1]):
-            if sampx[row, col] < 0:
-                sampx[row, col] = 0
-            if sampx[row, col] > arr.shape[1] - 1:
-                sampx[row, col] = arr.shape[1] - 1
-
-    # replace sampled values with new sampled values
-    for row in range(sampx.shape[0]):
-        for col in range(sampx.shape[1]):
-            xer = (sampx[row, col])
-            y1 = sampy1[row, col]
-            y2 = sampy2[row, col]
-            arr[y1, xer] = arr[y2, xer]
-    return arr
