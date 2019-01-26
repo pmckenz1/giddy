@@ -3,6 +3,7 @@
 from __future__ import print_function
 
 import os
+import re
 import sys
 import time
 import pickle
@@ -147,15 +148,15 @@ class SlidingWindow:
 
         # save raxml_table to disk
         self.raxml_table.to_csv(
-            os.path.join(self.workdir, self.name + ".raxml_table"))
+            os.path.join(self.workdir, self.name + ".raxml.csv"))
 
 
     def run_mb_sliding_windows(self, window_size, slide_interval):
         """
-        Run sliding window tree inference and write PP trees to file.
-        Then count all unique trees and return an array (nwindows, nsampled)
-        of posterior sampled trees in each region, also saved to disk as 
-        mb_table.csv. 
+        Run sliding window tree inference in mrbayues. 
+        Writes a pickled dictionary with all trees {0: tree1, 1: tree2 ...}
+        Writes a numpy array with posterior tree distribution. 
+        Writes a DataFrame with (nsnps, consenstre)
         """
 
         # ensure tmpdir for storing newicks
@@ -206,8 +207,9 @@ class SlidingWindow:
                 finished = [i for i in rasyncs if rasyncs[i].ready()]
                 for idx in finished:
                     if rasyncs[idx].successful():
-                        nsnps, treefile = rasyncs[idx].get()
-                        self.mb_table[idx, 'nsnps'] = nsnps
+                        nsnps, tree, treefile = rasyncs[idx].get()
+                        self.mb_table.loc[idx, 'nsnps'] = nsnps
+                        self.mb_table.loc[idx, 'tree'] = tree
                         treefiles[idx] = treefile
                         del rasyncs[idx]
                         done += 1
@@ -237,10 +239,6 @@ class SlidingWindow:
                         treeset[idx] = tree
                         idx += 1
 
-        # save this dictionary as a pickle
-        with open(os.path.join(self.workdir, self.name + ".p")) as outp:
-            pickle.dump(treeset, outp)
-
         # reverse lookup dictionary for trees
         revset = {j: i for (i, j) in treeset.items()}
 
@@ -267,11 +265,19 @@ class SlidingWindow:
                 # fill leftover with most common to accommodate rounding errors
                 posterior[idx:, tidx] = treeidx
 
-        # save raxml_table to disk
-        self.mb_table = pd.DataFrame(posterior, columns=starts)
-        self.mb_table.to_csv(
-            os.path.join(self.workdir, self.name + ".mb_table.csv"))
+        # save tree mapping dictionary as a pickle
+        phandle = os.path.join(self.workdir, self.name + ".mb.p")
+        with open(phandle, 'wb') as pout:
+            pickle.dump(treeset, pout)
 
+        # save posterior array as a numpy pickle
+        np.save(os.path.join(self.workdir, self.name + ".mb.npy"), posterior)
+
+        # save tree_table as DataFrame
+        self.mb_table.to_csv(os.path.join(self.workdir, self.name + ".mb.csv"))           
+
+        # cleanup (comment to debug)
+        shutil.rmtree(mbdir)
 
 
 class TreeInference:
@@ -342,9 +348,9 @@ class TreeInference:
             matrix += namestring.format(i[0].decode(), i[1].decode())
 
         # parameters
-        ngen = (self.kwargs["ngen"] if self.kwargs.get("ngen") else 50000)
-        sfreq = (self.kwargs["samplefreq"] if self.kwargs.get("samplefreq") else 50)
-        burnin = (self.kwargs["burnin"] if self.kwargs.get("burnin") else 5000)
+        ngen = (self.kwargs["ngen"] if self.kwargs.get("ngen") else 100000)
+        sfreq = (self.kwargs["samplefreq"] if self.kwargs.get("samplefreq") else 100)
+        burnin = (self.kwargs["burnin"] if self.kwargs.get("burnin") else 10000)
 
         # write nexus block
         mbdir = os.path.join(self.workdir, "mb-analysis-tmps")
@@ -373,15 +379,16 @@ class TreeInference:
         if proc.returncode:
             raise Exception("mb error: {}".format(out.decode()))
 
-        # load the majority rule consensus tree
+        # load the majority rule consensus tree 
         with open(handle + ".con.tre") as intre:
             dat = intre.readlines()
-            treeline = [i for i in dat if i.lstrip().startswith("tree")]
+            treeline = [i for i in dat if i.lstrip().startswith("tree")][0]
             tree = treeline.split("[&U] ")[-1]
-
+            tree = re.sub(r"\[(.*?)\]", "", tree)
+            tree = toytree.tree(tree).write(fmt=0)
 
         # return nsnps
-        return self.nsnps, handle + ".trprobs"
+        return self.nsnps, tree, handle + ".trprobs"
 
 
 
