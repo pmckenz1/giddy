@@ -1,33 +1,66 @@
-#!/usr/bin/env Python
+#!/usr/bin/env python
 
 "MCMC functions for tree importance/decay sampling"
 
-import os
-import numpy as np
-import pandas as pd
-from numba import njit
+from __future__ import print_function
 
+import os
+import pickle
+
+import toytree
+import numpy as np
+from numba import njit
 
 
 class MCMC:
     def __init__(self, name, workdir="analysis-strange", ipyclient=None):
 
+        # load args
         self.name = name
         self.workdir = workdir
         self.ipyclient = ipyclient
 
         # load the mb results from Window analysis
-        mbcsv = os.path.join(self.workdir, self.name + "mb_table.csv")
-        self.arr = pd.read_csv(mbcsv, index_col=0).values
+        self.arr = np.load(os.path.join(self.workdir, self.name + ".mb.npy"))
 
+        # load the tree dictionary for mapping indices to newick {0: tree1, ..}
+        phandle = os.path.join(self.workdir, self.name + ".mb.p")
+        with open(phandle, 'rb') as pin:
+            self.treedict = pickle.load(pin)
+
+        # the species tree as toytree, should have theta and Ne as features?
+        self.sptree = toytree.tree(
+            os.path.join(self.workdir, self.name + ".newick"))
+
+        # the likelihood of each topology given species tree {0: 0.001, 1: 0..}
+        # if we can jit the whole mcmc chain then this could be a lookup array
+        # instead of a dict...
+        self.treeliks = {i: 0 for i in self.treedict}
+        self.get_gtree_likelihoods()
+
+
+    def run(self):
         # start chain 
         while 1:
+
             # propose a move
             newarr = jsample(self.arr)
 
-            # calculate score
+            # calculate score: get modes, turn into trees, get liks product
+            mdarr = jmodes(newarr)
+            score = np.prod([self.treeliks[i] for i in mdarr])
+
+            # calculate whether to accept new move
+            
+
+            # write to disk
 
 
+            # 
+
+
+    def get_gtree_likelihoods(self):
+        pass
 
 
 
@@ -269,8 +302,34 @@ class MCMC:
 #     return(np.random.choice(topos,p=probs,replace=True,size = size))
 
 
+
+def modes_multi(arr, treedict, topn=4):
+    "deprecated... return MJ consensus of top N trees in each column"
+
+    # empty array of -1s
+    modes = np.zeros((topn, arr.shape[1]), dtype=np.uint32)
+    modes.fill(-1)
+
+    # fill with topn trees, if only <n tress in dist then -1 remains
+    for i in range(arr.shape[1]):
+        tops = np.unique(arr[:, i], return_counts=True)[1][:topn]
+        modes[:tops.size, i] = tops
+
+    # replace tree indices with the actual trees
+    txs = [[treedict.get(i) for i in modes[:, i]] for i in range(arr.shape[1])]
+
+    # get consensus trees
+    constres = [
+        toytree.mtree(i).get_consensus_tree().write(fmt=9) for i in txs
+    ]
+
+    # turn consensus trees back into indices (could make a new tree! ugh...)
+    return modes   
+
+
 @njit
-def modes(arr):
+def jmodes(arr):
+    "return top 1 tree in each column, muchhh faster than modes_multi()"
     modes = np.zeros(arr.shape[1], dtype=np.uint32)
     for i in range(arr.shape[1]):
         modes[i] = int(np.bincount(arr[:, i]).argmax())
@@ -279,9 +338,7 @@ def modes(arr):
 
 @njit
 def jsample(arr, nsamp=5, decay=2):
-    """
-    Resample nsamp indices in 2-d array using distance decay.
-    """
+    "Resample nsamp indices in 2-d array using distance decay."
     # get up/down position of cells to replace for each col
     sampy1 = np.zeros((nsamp, arr.shape[1]), dtype=np.uint32)
     for idx in range(arr.shape[1]):
