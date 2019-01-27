@@ -51,6 +51,7 @@ class Coalseq:
         )
         self.ntips = self.tree.ntips
         self.random_seed = random_seed
+        self.get_sequences = get_sequences
 
         # output attributes:
         self.treeseq = None
@@ -64,23 +65,23 @@ class Coalseq:
         self.cladeslist = None
         self.cladesarr = None
 
-        # if debug in kwargs then don't run sim functions during init
-        if not kwargs.get("debug"):
 
-            # fill treeseq, tree_table, and seqarr which is written to .hdf5
-            self._simulate_tree_sequence()
-            self._get_tree_table()
-            self._get_clade_table()
-            if get_sequences:
-                self._get_sequences()
+    def run(self):
 
-            # write results to disk in workdir
-            self.tree.write(
-                os.path.join(self.workdir, self.name + ".newick"))
-            self.clade_table.to_csv(
-                os.path.join(self.workdir, self.name + ".clade_table.csv"))
-            self.tree_table.to_csv(
-                os.path.join(self.workdir, self.name + ".tree_table.csv"))
+        # fill treeseq, tree_table, and seqarr which is written to .hdf5
+        self._simulate_tree_sequence()
+        self._get_tree_table()
+        self._get_clade_table()
+        if self.get_sequences:
+            self._get_sequences()
+
+        # write results to disk in workdir
+        self.tree.write(
+            os.path.join(self.workdir, self.name + ".newick"))
+        self.clade_table.to_csv(
+            os.path.join(self.workdir, self.name + ".clade_table.csv"))
+        self.tree_table.to_csv(
+            os.path.join(self.workdir, self.name + ".tree_table.csv"))
 
 
     def _get_demography(self):
@@ -143,15 +144,17 @@ class Coalseq:
             "end": intervals[1:],
             "length": intervals[1:] - intervals[:-1],
             "nsnps": 0,
-            "treeheight": [
-                int(tree.get_time(tree.get_root())) for tree 
-                in self.treeseq.trees()], 
-            "mstree": [tree.newick() for tree in self.treeseq.trees()], 
+            # "treeheight": [
+                # int(tree.get_time(tree.get_root())) for tree 
+                # in self.treeseq.trees()], 
+            "mstree": [tree.newick() for tree in self.treeseq.trees()],
+                # toytree.tree(tree.newick()).write(fmt=9) for tree 
+                # in self.treeseq.trees()], 
         })
 
         # drop intervals of length zero
         self.tree_table = self.tree_table[self.tree_table.length > 0]
-        self.tree_table.reindex()
+        self.tree_table.reset_index(drop=True, inplace=True)
 
 
     def _get_clade_table(self):
@@ -224,7 +227,7 @@ class Coalseq:
 
         # write sequence data to a tempfile
         proc1 = subprocess.Popen([
-            "seqgen",
+            "seq-gen",
             "-m", "GTR", 
             "-l", str(self.tree_table.length[idx]), 
             "-s", str(self.mutation_rate),
