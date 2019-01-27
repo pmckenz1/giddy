@@ -1,10 +1,14 @@
 #!/usr/bin/env python
 
-
 import sys
 import time
 import datetime
 
+
+
+class StrangeError(Exception):
+    def __init__(self, *args, **kwargs):
+        Exception.__init__(self, *args, **kwargs)
 
 
 def progressbar(finished, total, start, message):
@@ -16,6 +20,10 @@ def progressbar(finished, total, start, message):
         .format(hashes + nohash, int(progress), elapsed, message),
         end="")
     sys.stdout.flush()    
+
+
+
+
 
 
 # plotting tools to examine clade/node/tree support across regions...
