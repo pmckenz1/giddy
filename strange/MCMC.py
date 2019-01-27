@@ -24,48 +24,60 @@ class MCMC:
         self.workdir = workdir
         self.ipyclient = ipyclient
 
-        # load the mb results from Window analysis
-        self.arr = np.load(os.path.join(self.workdir, self.name + ".mb.npy"))
-
-        # load the tree dictionary for mapping indices to newick {0: tree1, ..}
-        phandle = os.path.join(self.workdir, self.name + ".mb.p")
-        with open(phandle, 'rb') as pin:
-            self.treedict = pickle.load(pin)
-
-        # the species tree as toytree, should have theta and Ne as features?
-        self.sptree = toytree.tree(
-            os.path.join(self.workdir, self.name + ".newick"))
+        # get results from Coalseq and WindowSlider
+        self.load_run_data()
 
         # the likelihood of each topology given species tree {0: 0.001, 1: 0..}
-        # if we can jit the whole mcmc chain then this could be a lookup array
-        # instead of a dict...
         self.treeliks = {i: 0 for i in self.treedict}
         self.parr = np.zeros(len(self.treedict), dtype=np.float64)
         self.score = 0
         
-        # load dataframes from Coalseq and Window objects to compare results
-        # against consensus trees or true gene trees.
-        self.tree_table = pd.read_csv(
-            os.path.join(self.workdir, name + ".tree_table.csv"), index_col=0)
-        self.mb_table = pd.read_csv(
-            os.path.join(self.workdir, name + ".mb.csv"), index_col=0)
-        # self.results = pd.DataFrame()
+        # the rf distances between trees: use for neighbor decay scoring
+        # Make a large array of (ntrees, ntrees) for pairwise dists
+        # ...
 
 
-    def run(self, nsteps=1000000, nsamp=10000):
+    def load_run_data(self):
+        # the mb tree array from WindowSlider analysis
+        self.arr = np.load(os.path.join(self.workdir, self.name + ".mb.npy"))
+
+        # the tree dictionary for mapping indices to newick {0: tree1, ..}
+        phandle = os.path.join(self.workdir, self.name + ".mb.p")
+        with open(phandle, 'rb') as pin:
+            self.treedict = pickle.load(pin)
+
+        # the species tree for likelihood calculations
+        self.sptree = toytree.tree(
+            os.path.join(self.workdir, self.name + ".newick"))
+
+
+    def load_results_data(self):
+        # load dfs with true trees, raxml trees, mb trees, 
+        self.tree_table = pd.read_csv(os.path.join(
+            self.workdir, self.name + ".tree_table.csv"), index_col=0)
+        self.mb_table = pd.read_csv(os.path.join(
+            self.workdir, self.name + ".mb.csv"), index_col=0)
+
+
+
+    def run(self, nsteps=10000, nsamps=100):
         "..."
 
         # fill gene tree probabilities (could be easily parallelized)
-        self.get_gtree_likelihoods()
+        if not self.parr[0]:
+            self.get_gtree_likelihoods()
         
         # stats: step, naccepted, score
         self.score = jget_score(jmodes(self.arr), self.parr)
         
         # start a run
         self.arr, self.score = (
-            loop(self.score, self.arr, self.parr, int(1e6), 1000)
+            loop(self.score, self.arr, self.parr, nsteps, nsamps)
         )
 
+        # save the new mixed tree array
+        mixpath = os.path.join(self.workdir, self.name + ".mb.mixed.npy")
+        np.save(mixpath, self.arr)
 
 
     def get_gtree_likelihoods(self):
@@ -89,6 +101,94 @@ class MCMC:
 
 
 
+# comparing how accurate our inferred trees are post mixing....
+class Compare:
+    def __init__(self, name, workdir):
+        # store args
+        self.name = name
+        self.workdir = workdir
+
+        # load mstrees for nregions and convert to fmt=9
+        self.tree_table = pd.read_csv(os.path.join(
+            self.workdir, self.name + ".tree_table.csv"), index_col=0)
+        self.tree_table.mstree = [
+            toytree.tree(i).write(fmt=9) for i in self.tree_table.mstree]
+
+        # load raxml for nwindows and convert to fmt=9
+        self.window_table = pd.read_csv(os.path.join(
+            self.workdir, self.name + ".raxml.csv"), index_col=0)
+        self.window_table["raxtree"] = [
+            toytree.tree(i).write(fmt=9) for i in self.window_table.tree]
+        self.window_table = self.window_table.drop(columns=["tree"])
+
+        # load mb consensus trees for nwindows and convert to fmt=9
+        mb_table = pd.read_csv(os.path.join(
+            self.workdir, self.name + ".mb.csv"), index_col=0)
+        self.window_table["mbcons"] = [
+            toytree.tree(i).write(fmt=9) for i in mb_table.tree]
+
+        # load the mb results from Window analysis
+        phandle = os.path.join(self.workdir, self.name + ".mb.p")
+        with open(phandle, 'rb') as pin:
+            self.treedict = pickle.load(pin)
+        startpath = os.path.join(self.workdir, self.name + ".mb.npy")
+        start_modes = jmodes(np.load(startpath))
+        self.window_table["mbstart"] = [self.treedict[i] for i in start_modes]
+        mixedpath = os.path.join(self.workdir, self.name + ".mb.mixed.npy")
+        mixed_modes = jmodes(np.load(mixedpath))
+        self.window_table["mbmixed"] = [self.treedict[i] for i in mixed_modes]
+
+        # true regions and sampled regions
+        self.nregions = self.tree_table.shape[0]
+        self.nwindows = self.window_table.shape[0]
+
+        # put all rfs in a table
+        self.rf_table = pd.DataFrame({
+            "start": self.tree_table.start, 
+            "end": self.tree_table.end, 
+            "length": self.tree_table.length, 
+            "nsnps": self.tree_table.nsnps, 
+            "rf_rax": 0,
+            "rf_mbcons": 0,
+            "rf_mbstart": 0, 
+            "rf_mbmixed": 0,
+            })
+
+
+    def run(self):
+        
+        # for region in the simulated tree table
+        for reg in self.tree_table.index:
+            
+            # get true ms tree
+            ttre = toytree.tree(self.tree_table.mstree[reg]).treenode
+
+            # get index for selecting window matching region
+            i0 = self.window_table.start < self.tree_table.end[reg]
+            i1 = self.window_table.stop >= self.tree_table.start[reg]
+            window = self.window_table.loc[i0 & i1].iloc[0]
+
+            # get raxml tree rf
+            itre = toytree.tree(window.raxtree).treenode
+            rfd = itre.robinson_foulds(ttre, unrooted_trees=True)
+            self.rf_table.loc[reg, "rf_rax"] = rfd[0]
+
+            # get mb cons tree rf
+            itre = toytree.tree(window.mbcons).treenode
+            rfd = itre.robinson_foulds(ttre, unrooted_trees=True)
+            self.rf_table.loc[reg, "rf_mbcons"] = rfd[0]
+
+            # get mb start tree rf
+            itre = toytree.tree(window.mbstart).treenode
+            rfd = itre.robinson_foulds(ttre, unrooted_trees=True)
+            self.rf_table.loc[reg, "rf_mbstart"] = rfd[0]
+
+            # get mb mixed tree rf
+            itre = toytree.tree(window.mbmixed).treenode
+            rfd = itre.robinson_foulds(ttre, unrooted_trees=True)
+            self.rf_table.loc[reg, "rf_mbmixed"] = rfd[0]
+
+        
 
 @njit
 def loop(score, arr, parr, nsteps, nsamps):
@@ -101,7 +201,7 @@ def loop(score, arr, parr, nsteps, nsamps):
     save_every = np.floor(nsteps / nsamps)
     stats = np.zeros(nsamps)
 
-    # start chain 
+    # start chain, this could be prange parallel threaded
     while 1:
 
         # propose a move
@@ -110,8 +210,9 @@ def loop(score, arr, parr, nsteps, nsamps):
         # calculate score: get modes, get sum of -logliks
         newscore = jget_score(jmodes(newarr), parr)
 
-        # calculate whether to accept new move
-        if newscore > score:
+        # todo: accept worse moves with some probability...
+        prob = min(1.0, score / newscore)
+        if np.random.binomial(1, prob):
             arr = newarr
             score = newscore
             accepted += 1
@@ -126,8 +227,6 @@ def loop(score, arr, parr, nsteps, nsamps):
             break
 
     return arr, stats
-
-
 
 
 @njit
