@@ -6,10 +6,14 @@ from __future__ import print_function
 
 import os
 import pickle
+import subprocess as sps
 
 import toytree
+import pandas as pd
 import numpy as np
 from numba import njit
+
+from .utils import StrangeError
 
 
 class MCMC:
@@ -36,60 +40,103 @@ class MCMC:
         # if we can jit the whole mcmc chain then this could be a lookup array
         # instead of a dict...
         self.treeliks = {i: 0 for i in self.treedict}
+        self.parr = np.zeros(len(self.treedict), dtype=np.float64)
+        self.score = 0
+        
+        # load dataframes from Coalseq and Window objects to compare results
+        # against consensus trees or true gene trees.
+        self.tree_table = pd.read_csv(
+            os.path.join(self.workdir, name + ".tree_table.csv"), index_col=0)
+        self.mb_table = pd.read_csv(
+            os.path.join(self.workdir, name + ".mb.csv"), index_col=0)
+        # self.results = pd.DataFrame()
+
+
+    def run(self, nsteps=1000000, nsamp=10000):
+        "..."
+
+        # fill gene tree probabilities (could be easily parallelized)
         self.get_gtree_likelihoods()
-
-
-    def run(self):
-        # start chain 
-        while 1:
-
-            # propose a move
-            newarr = jsample(self.arr)
-
-            # calculate score: get modes, turn into trees, get liks product
-            mdarr = jmodes(newarr)
-            score = np.prod([self.treeliks[i] for i in mdarr])
-
-            # calculate whether to accept new move
-            if score < self.score:
-                self.arr = newarr
-                self.score = score
-
-                # write to disk if index is ...
-                pass
+        
+        # stats: step, naccepted, score
+        self.score = jget_score(jmodes(self.arr), self.parr)
+        
+        # start a run
+        self.arr, self.score = (
+            loop(self.score, self.arr, self.parr, int(1e6), 1000)
+        )
 
 
 
     def get_gtree_likelihoods(self):
         "fill self.treeliks with likelihoods of each tree in self.treedict"
-        pass
+
+        for tidx in self.treedict.keys():
+            cmd = [
+                "hybrid-coal", 
+                "-sp", self.sptree.write(fmt=0),
+                "-gt", self.treedict[tidx],
+            ]        
+            proc = sps.Popen(cmd, stderr=sps.PIPE, stdout=sps.PIPE)
+            _, out = proc.communicate()
+
+            # check for errors
+            if proc.returncode:
+                raise StrangeError(out.decode())
+
+            # parse probability as neg log likelihood
+            self.parr[tidx] = -np.log(float(out.decode().strip().split()[-1]))
 
 
 
 
+@njit
+def loop(score, arr, parr, nsteps, nsamps):
+    "An mcmc sampling loop using all jitted funcs"
 
-def modes_multi(arr, treedict, topn=4):
-    "deprecated... return MJ consensus of top N trees in each column"
+    # stats: (accepted_step, score)
+    step = 0
+    save = 0
+    accepted = 0
+    save_every = np.floor(nsteps / nsamps)
+    stats = np.zeros(nsamps)
 
-    # empty array of -1s
-    modes = np.zeros((topn, arr.shape[1]), dtype=np.uint32)
-    modes.fill(-1)
+    # start chain 
+    while 1:
 
-    # fill with topn trees, if only <n tress in dist then -1 remains
-    for i in range(arr.shape[1]):
-        tops = np.unique(arr[:, i], return_counts=True)[1][:topn]
-        modes[:tops.size, i] = tops
+        # propose a move
+        newarr = jsample(arr)
 
-    # replace tree indices with the actual trees
-    txs = [[treedict.get(i) for i in modes[:, i]] for i in range(arr.shape[1])]
+        # calculate score: get modes, get sum of -logliks
+        newscore = jget_score(jmodes(newarr), parr)
 
-    # get consensus trees
-    constres = [
-        toytree.mtree(i).get_consensus_tree().write(fmt=9) for i in txs
-    ]
+        # calculate whether to accept new move
+        if newscore > score:
+            arr = newarr
+            score = newscore
+            accepted += 1
+            
+        if not step % save_every:
+            stats[save] = score
+            save += 1
 
-    # turn consensus trees back into indices (could make a new tree! ugh...)
-    return constres
+        # when to stop
+        step += 1
+        if step > nsteps:
+            break
+
+    return arr, stats
+
+
+
+
+@njit
+def jget_score(modes, parr):
+    "get sum of -loglikelihoods for a proposed modes array"
+    newliks = np.zeros(modes.size)
+    for idx in range(modes.size):
+        newliks[idx] = parr[modes[idx]]
+    return np.sum(newliks)
 
 
 @njit
@@ -104,6 +151,10 @@ def jmodes(arr):
 @njit
 def jsample(arr, nsamp=5, decay=2):
     "Resample nsamp indices in 2-d array using distance decay."
+
+    # do not alter original array
+    arr = arr.copy()
+
     # get up/down position of cells to replace for each col
     sampy1 = np.zeros((nsamp, arr.shape[1]), dtype=np.uint32)
     for idx in range(arr.shape[1]):
@@ -138,6 +189,31 @@ def jsample(arr, nsamp=5, decay=2):
             y2 = sampy2[row, col]
             arr[y1, xer] = arr[y2, xer]
     return arr
+
+
+
+def modes_multi(arr, treedict, topn=4):
+    "deprecated... return MJ consensus of top N trees in each column"
+
+    # empty array of -1s
+    modes = np.zeros((topn, arr.shape[1]), dtype=np.uint32)
+    modes.fill(-1)
+
+    # fill with topn trees, if only <n tress in dist then -1 remains
+    for i in range(arr.shape[1]):
+        tops = np.unique(arr[:, i], return_counts=True)[1][:topn]
+        modes[:tops.size, i] = tops
+
+    # replace tree indices with the actual trees
+    txs = [[treedict.get(i) for i in modes[:, i]] for i in range(arr.shape[1])]
+
+    # get consensus trees
+    constres = [
+        toytree.mtree(i).get_consensus_tree().write(fmt=9) for i in txs
+    ]
+
+    # turn consensus trees back into indices (could make a new tree! ugh...)
+    return constres
 
 
 
