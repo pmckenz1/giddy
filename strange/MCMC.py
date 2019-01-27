@@ -61,7 +61,7 @@ class MCMC:
 
 
     def run(self, nsteps=10000, nsamps=100):
-        "..."
+        "TODO: run parallel chains on ipyclient."
 
         # fill gene tree probabilities (could be easily parallelized)
         if not self.parr[0]:
@@ -103,7 +103,7 @@ class MCMC:
 
 # comparing how accurate our inferred trees are post mixing....
 class Compare:
-    def __init__(self, name, workdir):
+    def __init__(self, name, workdir, ipyclient=None):
         # store args
         self.name = name
         self.workdir = workdir
@@ -135,8 +135,18 @@ class Compare:
         start_modes = jmodes(np.load(startpath))
         self.window_table["mbstart"] = [self.treedict[i] for i in start_modes]
         mixedpath = os.path.join(self.workdir, self.name + ".mb.mixed.npy")
-        mixed_modes = jmodes(np.load(mixedpath))
+        mixedarr = np.load(mixedpath)
+        mixed_modes = jmodes(mixedarr)
         self.window_table["mbmixed"] = [self.treedict[i] for i in mixed_modes]
+
+        # get consensus trees for each column of mb tree array
+        # mbmixed_cons = []
+        # for col in range(mixedarr.shape[1]):
+        #     treedist = [self.treedict[i] for i in mixedarr[:, col]]
+        #     constree = toytree.mtree(treedist).get_consensus_tree()
+        #     mbmixed_cons.append(constree.write(fmt=9))
+        #     print(col)
+        # self.window_table["mbmixed_cons"] = mbmixed_cons
 
         # true regions and sampled regions
         self.nregions = self.tree_table.shape[0]
@@ -152,6 +162,7 @@ class Compare:
             "rf_mbcons": 0,
             "rf_mbstart": 0, 
             "rf_mbmixed": 0,
+            "rf_mbmixed_cons": 0,
             })
 
 
@@ -188,6 +199,11 @@ class Compare:
             rfd = itre.robinson_foulds(ttre, unrooted_trees=True)
             self.rf_table.loc[reg, "rf_mbmixed"] = rfd[0]
 
+            # # get mb mixed cons tree rf
+            # itre = toytree.tree(window.mbmixed_cons).treenode
+            # rfd = itre.robinson_foulds(ttre, unrooted_trees=True)
+            # self.rf_table.loc[reg, "rf_mbmixed_cons"] = rfd[0]
+
         
 
 @njit
@@ -211,8 +227,7 @@ def loop(score, arr, parr, nsteps, nsamps):
         newscore = jget_score(jmodes(newarr), parr)
 
         # todo: accept worse moves with some probability...
-        prob = min(1.0, score / newscore)
-        if np.random.binomial(1, prob):
+        if newscore <= score:
             arr = newarr
             score = newscore
             accepted += 1
