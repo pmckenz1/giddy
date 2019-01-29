@@ -35,8 +35,7 @@ class Coalseq:
         recombination_rate=1e-8,
         get_sequences=True,
         random_seed=None,
-        **kwargs,
-        ):
+        **kwargs):
        
         # store param settings
         self.name = name

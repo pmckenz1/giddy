@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+from __future__ import print_function
+
 import sys
 import time
 import datetime
@@ -19,7 +21,7 @@ def progressbar(finished, total, start, message):
     print("\r[{}] {:>3}% {} | {:<12} "
         .format(hashes + nohash, int(progress), elapsed, message),
         end="")
-    sys.stdout.flush()    
+    sys.stdout.flush()     
 
 
 
