@@ -305,6 +305,21 @@ def jsample(arr, nsamp=5, decay=2):
     return arr
 
 
+def get_uspr(newick1,newick2,uspr_bin_path):
+    '''
+    uses heuristic to calculate the minimum number of 
+    SPR moves between topologies
+    '''
+    treecomp = "WORD\n {}\n {}\n WORD".format(newick1,newick2)
+    proc = subprocess.Popen([uspr_bin_path + 
+        ' --uspr --no-approx-estimate --no-tbr-estimate --no-replug-estimate<<'+
+        treecomp], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    out, err = proc.communicate()
+    if proc.returncode:
+        raise Exception("uspr error: {}".format(out.decode()))
+    return(int(out.strip().split('\n')[-1].split(' ')[-1]))
+
+
 
 def modes_multi(arr, treedict, topn=4):
     "deprecated... return MJ consensus of top N trees in each column"
