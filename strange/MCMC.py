@@ -11,7 +11,7 @@ import subprocess as sps
 import toytree
 import pandas as pd
 import numpy as np
-from numba import njit
+from numba import jit, njit
 
 from .utils import StrangeError
 
@@ -60,16 +60,16 @@ class MCMC:
 
 
 
-    def run(self, nsteps=10000, nsamps=100):
+    def run(self, nsteps=10000, nsamps=100, hybrid_coal_path=None):
         "TODO: run parallel chains on ipyclient."
 
         # fill gene tree probabilities (could be easily parallelized)
         if not self.parr[0]:
-            self.get_gtree_likelihoods()
+            self.get_gtree_likelihoods(hybrid_coal_path)
         
         # stats: step, naccepted, score
-        self.score = jget_score(jmodes(self.arr), self.parr)
-        
+        self.score = jget_score(count_arr(jmodes(self.arr)), self.parr)
+
         # start a run
         self.arr, self.score = (
             loop(self.score, self.arr, self.parr, nsteps, nsamps)
@@ -80,12 +80,14 @@ class MCMC:
         np.save(mixpath, self.arr)
 
 
-    def get_gtree_likelihoods(self):
+    def get_gtree_likelihoods(self,hybrid_coal_path):
         "fill self.treeliks with likelihoods of each tree in self.treedict"
 
+        if not hybrid_coal_path:
+            hybrid_coal_path = "hybrid-coal"
         for tidx in self.treedict.keys():
             cmd = [
-                "hybrid-coal", 
+                hybrid_coal_path, 
                 "-sp", self.sptree.write(fmt=0),
                 "-gt", self.treedict[tidx],
             ]        
@@ -206,12 +208,12 @@ class Compare:
 
         
 
-@njit
+#@jit
 def loop(score, arr, parr, nsteps, nsamps):
     "An mcmc sampling loop using all jitted funcs"
 
     # stats: (accepted_step, score)
-    step = 0
+    step = 1
     save = 0
     accepted = 0
     save_every = np.floor(nsteps / nsamps)
@@ -224,7 +226,11 @@ def loop(score, arr, parr, nsteps, nsamps):
         newarr = jsample(arr)
 
         # calculate score: get modes, get sum of -logliks
-        newscore = jget_score(jmodes(newarr), parr)
+        modesarr = jmodes(newarr)
+
+        modefreqs = count_arr(modesarr)
+
+        newscore = jget_score(modefreqs, parr)
 
         # todo: accept worse moves with some probability...
         if newscore <= score:
@@ -244,13 +250,26 @@ def loop(score, arr, parr, nsteps, nsamps):
     return arr, stats
 
 
-@njit
-def jget_score(modes, parr):
-    "get sum of -loglikelihoods for a proposed modes array"
-    newliks = np.zeros(modes.size)
-    for idx in range(modes.size):
-        newliks[idx] = parr[modes[idx]]
-    return np.sum(newliks)
+#@njit
+#def jget_score(modes, parr):
+#    "get sum of -loglikelihoods for a proposed modes array"
+#    newliks = np.zeros(modes.size)
+#    for idx in range(modes.size):
+#        newliks[idx] = parr[modes[idx]]
+#    return newliks
+
+
+@jit
+def count_arr(modesarr):
+    unique = np.array(np.unique(modesarr,return_counts=True))
+    return(unique[0],
+           -np.log(unique[1].astype(np.float64)/np.sum(unique[1])))
+
+
+@jit
+def jget_score(counted_tuple, parr):
+    targets = parr[counted_tuple[0]]
+    return np.sqrt( np.mean((counted_tuple[1] - targets) ** 2) )
 
 
 @njit
@@ -319,6 +338,19 @@ def get_uspr(newick1,newick2,uspr_bin_path):
         raise Exception("uspr error: {}".format(out.decode()))
     return(int(out.strip().split('\n')[-1].split(' ')[-1]))
 
+
+def normalize_in_place(d):
+    '''
+    normalize a dictionary in place
+    source: https://stackoverflow.com/questions/16417916/normalizing-dictionary-values/16418021
+    '''
+    factor=1.0/math.fsum(d.itervalues())
+    for k in d:
+        d[k] = d[k]*factor
+    key_for_max = max(d.iteritems(), key=operator.itemgetter(1))[0]
+    diff = 1.0 - math.fsum(d.itervalues())
+    #print "discrepancy = " + str(diff)
+    d[key_for_max] += diff
 
 
 def modes_multi(arr, treedict, topn=4):
